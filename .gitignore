@@ -1,5 +1,5 @@
 # Local hosting metadata and screenshots are not needed by GitHub Pages.
-elliptic-lab/.openai/
+CDR_visualizer/.openai/
 *-preview.png
 .DS_Store
 node_modules/

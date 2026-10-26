@@ -30,7 +30,7 @@ jobs:
       - name: Upload the static app
         uses: actions/upload-pages-artifact@v4
         with:
-          path: elliptic-lab/dist
+          path: CDR_visualizer/dist
 
       - name: Deploy to GitHub Pages
         id: deployment
