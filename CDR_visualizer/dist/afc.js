@@ -25,24 +25,42 @@ export function afcReducedLoad(graph,load,g){
 }
 function fullField(graph,b,g){const u=g.slice();graph.mesh.interior.forEach((id,i)=>u[id]=b[i]);return u;}
 
-// Symmetric BJK-type local-extremum limiter, mu=1. Low-order matrix is fixed.
-export function steadyFluxes(graph,u){
+// Symmetric BJK-type local-extremum limiter, user-selected mu. Low-order matrix is fixed.
+export function steadyFluxes(graph,u,mu=1){
+  if(!Number.isFinite(mu)||mu<0||mu>10)throw Error('Steady AFC μ must be between 0 and 10.');
   const {size,edges,neighbors,mesh}=graph,pplus=new Float64Array(size),pminus=new Float64Array(size),q=new Float64Array(size),rplus=new Float64Array(size).fill(1),rminus=new Float64Array(size).fill(1),flux=new Float64Array(edges.length);
   edges.forEach(({i,j,viscosity:g},k)=>{const f=g*(u[i]-u[j]);flux[k]=f;pplus[i]+=Math.max(0,f);pminus[i]+=Math.min(0,f);pplus[j]+=Math.max(0,-f);pminus[j]+=Math.min(0,-f);q[i]+=g;q[j]+=g;});
-  for(const i of mesh.interior){let lo=u[i],hi=u[i];for(const j of neighbors[i]){lo=Math.min(lo,u[j]);hi=Math.max(hi,u[j]);}if(pplus[i]>0)rplus[i]=Math.min(1,q[i]*(hi-u[i])/pplus[i]);if(pminus[i]<0)rminus[i]=Math.min(1,q[i]*(lo-u[i])/pminus[i]);}
+  for(const i of mesh.interior){let lo=u[i],hi=u[i];for(const j of neighbors[i]){lo=Math.min(lo,u[j]);hi=Math.max(hi,u[j]);}if(pplus[i]>0)rplus[i]=Math.min(1,mu*q[i]*(hi-u[i])/pplus[i]);if(pminus[i]<0)rminus[i]=Math.min(1,mu*q[i]*(lo-u[i])/pminus[i]);}
   const correction=new Float64Array(graph.N),alpha=new Float64Array(edges.length);let limited=0;
   edges.forEach(({i,j},k)=>{const f=flux[k],a=f>=0?Math.min(rplus[i],rminus[j]):Math.min(rminus[i],rplus[j]);alpha[k]=a;if(a<1-1e-12)limited++;const row=mesh.dof[i],col=mesh.dof[j];if(row>=0)correction[row]+=a*f;if(col>=0)correction[col]-=a*f;});
   return {correction,alpha,limitedFraction:limited/(edges.length||1)};
 }
+// A field-specific probe, not a guarantee for every affine direction or mesh.
+export function steadyLinearityProbe(graph,mu){
+  const u=Float64Array.from(graph.mesh.nodes,([x,y])=>1+x+y),limited=steadyFluxes(graph,u,mu),retained=new Float64Array(graph.N);
+  const plus=new Float64Array(graph.size),minus=new Float64Array(graph.size),q=new Float64Array(graph.size);let requiredMu=0,maxLimitedFlux=0;
+  graph.edges.forEach(({i,j,viscosity:g},k)=>{
+    const f=g*(u[i]-u[j]),left=(1-limited.alpha[k])*f,ri=graph.mesh.dof[i],rj=graph.mesh.dof[j];
+    if(ri>=0)retained[ri]+=left;if(rj>=0)retained[rj]-=left;
+    if(ri>=0||rj>=0)maxLimitedFlux=Math.max(maxLimitedFlux,Math.abs(left));
+    plus[i]+=Math.max(0,f);minus[i]+=Math.min(0,f);plus[j]+=Math.max(0,-f);minus[j]+=Math.min(0,-f);q[i]+=g;q[j]+=g;
+  });
+  for(const i of graph.mesh.interior){let lo=u[i],hi=u[i];for(const j of graph.neighbors[i]){lo=Math.min(lo,u[j]);hi=Math.max(hi,u[j]);}
+    if(plus[i]>1e-14)requiredMu=Math.max(requiredMu,plus[i]/(q[i]*(hi-u[i])));
+    if(minus[i]<-1e-14)requiredMu=Math.max(requiredMu,minus[i]/(q[i]*(lo-u[i])));
+  }
+  return {requiredMu,maxLimitedFlux,retainedResidual:Math.max(0,...retained.map(Math.abs))};
+}
 export function solveAfcSteady(state,system){
-  const started=performance.now(),graph=buildAfc(state,system),{N,g}=system,lowRhs=afcReducedLoad(graph,system.load,g),factor=factorDense(graph.lowOperator,N);
+  const started=performance.now(),graph=buildAfc(state,system),mu=state.afcMu??1,{N,g}=system,lowRhs=afcReducedLoad(graph,system.load,g),factor=factorDense(graph.lowOperator,N);
+  if(!Number.isFinite(mu)||mu<0||mu>10)throw Error('Steady AFC μ must be between 0 and 10.');
   const maxIterations=state.afcMaxIterations??500,tolerance=state.afcTolerance??1e-8,relax=state.afcRelaxation??.5;
   if(!Number.isInteger(maxIterations)||maxIterations<1||maxIterations>2000)throw Error('AFC iteration limit must be an integer from 1 to 2000.');
   if(!Number.isFinite(tolerance)||tolerance<1e-12||tolerance>1e-3)throw Error('AFC tolerance must be between 1e-12 and 1e-3.');
   if(!Number.isFinite(relax)||relax<=0||relax>1)throw Error('AFC relaxation must be in (0,1].');
   let b=solveFactored(factor,lowRhs),iterations=0,converged=false,nonlinearResidual=Infinity,limited;
   for(;;){
-    limited=state.stabilization==='afc-low'?{correction:new Float64Array(N),alpha:new Float64Array(graph.edges.length),limitedFraction:1}:steadyFluxes(graph,fullField(graph,b,g));
+    limited=state.stabilization==='afc-low'?{correction:new Float64Array(N),alpha:new Float64Array(graph.edges.length),limitedFraction:1}:steadyFluxes(graph,fullField(graph,b,g),mu);
     const rhs=lowRhs.map((v,i)=>v+limited.correction[i]);let norm=0,scale=0;
     for(let i=0;i<N;i++){let v=-rhs[i],row=0;for(let j=0;j<N;j++){const a=graph.lowOperator[i*N+j];v+=a*b[j];row+=Math.abs(a*b[j]);}norm=Math.max(norm,Math.abs(v));scale=Math.max(scale,row+Math.abs(rhs[i]));}
     nonlinearResidual=norm/(scale||1);if(nonlinearResidual<=tolerance){converged=true;break;}if(iterations>=maxIterations)break;
@@ -51,7 +69,7 @@ export function solveAfcSteady(state,system){
   // Report the actual final nonlinear operator, not the frozen low-order solve.
   const effectiveA=system.A.slice(),effectiveF=system.F.slice();
   graph.edges.forEach(({i,j,viscosity},k)=>{const v=(1-limited.alpha[k])*viscosity,ri=graph.mesh.dof[i],rj=graph.mesh.dof[j];if(ri>=0){effectiveA[ri*N+ri]+=v;if(rj>=0)effectiveA[ri*N+rj]-=v;else effectiveF[ri]+=v*g[j];}if(rj>=0){effectiveA[rj*N+rj]+=v;if(ri>=0)effectiveA[rj*N+ri]-=v;else effectiveF[rj]+=v*g[i];}});
-  return {stableB:b,effectiveA,effectiveF,afcD:graph.D,afc:{iterations,converged,nonlinearResidual,limitedFraction:limited.limitedFraction,ms:performance.now()-started,kind:'steady',edgeCount:graph.edges.length}};
+  return {stableB:b,effectiveA,effectiveF,afcD:graph.D,afc:{mu,iterations,converged,nonlinearResidual,limitedFraction:limited.limitedFraction,ms:performance.now()-started,kind:'steady',edgeCount:graph.edges.length,...(state.preset==='afc-affine'?{affineLimiter:steadyLinearityProbe(graph,state.stabilization==='afc-low'?0:mu)}:{})}};
 }
 
 // Explicit Euler FCT stage: lumped target mass, graph-viscosity predictor,

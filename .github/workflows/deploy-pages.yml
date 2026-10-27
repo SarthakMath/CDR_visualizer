@@ -1,4 +1,4 @@
-name: Deploy Elliptic Lab to GitHub Pages
+name: Deploy CDR FEM FCT lab to GitHub Pages
 
 on:
   push:

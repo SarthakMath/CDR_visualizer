@@ -12,7 +12,7 @@ const gaussian = (cx,cy,s2) => `${s2}/(${s2}+4*eps*t)*exp(-((x-${cx}-vx*t)^2+(y-
 export function preset(name = 'poisson') {
   const s = { preset:name, mode:'poisson', n:16, pattern:'forward', epsilon:1,
     betaX:0, betaY:0, reaction:0, source:'2*pi^2*sin(pi*x)*sin(pi*y)', amplitude:1,
-    boundaries:{left:'0',right:'0',bottom:'0',top:'0'}, diffusion:0,stabilization:'isotropic',supgScale:1,afcMaxIterations:500,afcTolerance:1e-8,afcRelaxation:.5,
+    boundaries:{left:'0',right:'0',bottom:'0',top:'0'}, diffusion:0,stabilization:'isotropic',supgScale:1,afcMu:1,afcMaxIterations:500,afcTolerance:1e-8,afcRelaxation:.5,
     matrixEdits:{}, rhsEdits:{}, nodeEdits:{},initial:'sin(pi*x)*sin(pi*y)',dt:0.005,duration:0.8,scheme:'be',massType:'consistent' };
   if (name === 'layer') Object.assign(s, {mode:'transport',epsilon:0.005,betaX:1,source:'1',
     boundaries:{left:'0',right:'0',bottom:layerTrace,top:layerTrace}});
@@ -33,6 +33,7 @@ export function preset(name = 'poisson') {
   }
   if(name==='afc-front')Object.assign(s,preset('supg-front'),{preset:name,stabilization:'afc',massType:'lumped'});
   if(name==='afc-layer')Object.assign(s,preset('supg-layer'),{preset:name,stabilization:'afc'});
+  if(name==='afc-affine')Object.assign(s,{mode:'transport',n:8,pattern:'forward',epsilon:.005,betaX:1,betaY:.3,source:'vx+vy+c*(1+x+y)',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,'1+x+y'])),stabilization:'afc',afcMu:1,afcTolerance:1e-11,afcMaxIterations:1500});
   return s;
 }
 
@@ -69,7 +70,7 @@ export function expression(source) {
 
 export function makeMesh(n,pattern='forward') {
   if(!Number.isInteger(n)||n<2||n>32)throw Error('Mesh subdivisions must be an integer from 2 to 32.');
-  if(!['forward','backward','alternating'].includes(pattern))throw Error('Unknown triangulation pattern.');
+  if(!['forward','backward','alternating','shifted'].includes(pattern))throw Error('Unknown triangulation pattern.');
   const nodes=[],triangles=[],interior=[],boundary=[],dof=new Int32Array((n+1)**2).fill(-1);
   for(let j=0;j<=n;j++)for(let i=0;i<=n;i++){
     const id=j*(n+1)+i;nodes.push([i/n,j/n]);
@@ -77,10 +78,11 @@ export function makeMesh(n,pattern='forward') {
   }
   for(let j=0;j<n;j++)for(let i=0;i<n;i++){
     const a=j*(n+1)+i,b=a+1,c=a+n+1,d=c+1;
-    if(pattern==='forward'||(pattern==='alternating'&&(i+j)%2===0))triangles.push([a,b,d],[a,d,c]);
+    if(['forward','shifted'].includes(pattern)||(pattern==='alternating'&&(i+j)%2===0))triangles.push([a,b,d],[a,d,c]);
     else triangles.push([a,b,c],[b,d,c]);
   }
-  return {n,nodes,triangles,interior,boundary,dof};
+  if(pattern==='shifted'){const k=Math.floor(n/2),id=k*(n+1)+k;nodes[id][0]+=.35/n;nodes[id][1]+=.2/n;}
+  return {n,pattern,nodes,triangles,interior,boundary,dof};
 }
 
 // Degree-five, seven-point Dunavant rule; weights sum to one.
@@ -110,10 +112,12 @@ export function boundaryEvaluator(state,mesh){
   };
 }
 
+function triangleArea(ps){return Math.abs((ps[1][0]-ps[0][0])*(ps[2][1]-ps[0][1])-(ps[2][0]-ps[0][0])*(ps[1][1]-ps[0][1]))/2;}
+
 export function sourceLoad(mesh,source,state,time=0){
   const F=new Float64Array(mesh.interior.length),epsilon=physicalDiffusion(state),beta=velocity(state);
   for(const tri of mesh.triangles){
-    const ps=tri.map(id=>mesh.nodes[id]),area=1/(2*mesh.n**2);
+    const ps=tri.map(id=>mesh.nodes[id]),area=triangleArea(ps);
     for(const[q,w]of quadrature){
       const x=q.reduce((s,v,i)=>s+v*ps[i][0],0),y=q.reduce((s,v,i)=>s+v*ps[i][1],0),v=source(x,y,epsilon,time,...beta,state.reaction??0)*state.amplitude*area*w;
       for(let i=0;i<3;i++){const row=mesh.dof[tri[i]];if(row>=0)F[row]+=v*q[i];}
@@ -210,6 +214,7 @@ export function solveDense(A,rhs) {
 export function exactSolution(state){
   const clean=preset(state.preset);
   if(state.mode!==clean.mode||state.source!==clean.source||state.amplitude!==1||(!isTransient(state)&&(state.betaX!==clean.betaX||state.betaY!==clean.betaY))||Object.keys(state.matrixEdits).length||Object.keys(state.rhsEdits).length||Object.keys(state.nodeEdits).length||Object.keys(clean.boundaries).some(k=>state.boundaries[k]!==clean.boundaries[k]))return null;
+  if(state.preset==='afc-affine')return(x,y)=>1+x+y;
   if(state.preset==='steady-adr')return(x,y)=>Math.sin(Math.PI*x)*Math.sin(Math.PI*y);
   if(state.preset==='forming-layer'){if(state.initial!==clean.initial||state.betaX!==1||state.betaY!==0)return null;const q=expression(layerTrace);return(x,y,t=0)=>(1-Math.exp(-t))*q(x,y,state.epsilon);}
   if(['supg-front','afc-front'].includes(state.preset)){if(state.initial!==clean.initial)return null;const fn=expression(frontInitial),[vx,vy]=velocity(state);return(x,y,t=0)=>Math.exp(-(state.reaction??0)*t)*fn(x-vx*t,y-vy*t);}
@@ -229,7 +234,9 @@ export function exactSolution(state){
 
 export function interpolate(mesh,u,x,y){
   const n=mesh.n,i=Math.min(n-1,Math.max(0,Math.floor(x*n))),j=Math.min(n-1,Math.max(0,Math.floor(y*n)));
-  const candidates=mesh.triangles.slice(2*(j*n+i),2*(j*n+i)+2);
+  const candidates=[];
+  const radius=mesh.pattern==='shifted'?1:0;
+  for(let cy=Math.max(0,j-radius);cy<=Math.min(n-1,j+radius);cy++)for(let cx=Math.max(0,i-radius);cx<=Math.min(n-1,i+radius);cx++)candidates.push(...mesh.triangles.slice(2*(cy*n+cx),2*(cy*n+cx)+2));
   for(const ids of candidates){
     const [a,b,c]=ids.map(id=>mesh.nodes[id]),det=(b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1]);
     const l0=((b[1]-c[1])*(x-c[0])+(c[0]-b[0])*(y-c[1]))/det,l1=((c[1]-a[1])*(x-c[0])+(a[0]-c[0])*(y-c[1]))/det,l2=1-l0-l1;
@@ -245,12 +252,15 @@ export function diagnostics(A,F,b,u,mesh,exact,rows=null){
     else for(let j=0;j<b.length;j++){sum+=A[i*b.length+j]*b[j];rowNorm+=Math.abs(A[i*b.length+j]);}
     residual=Math.max(residual,Math.abs(sum));normF=Math.max(normF,Math.abs(F[i]));normA=Math.max(normA,rowNorm);normB=Math.max(normB,Math.abs(b[i]));
   }
-  let error2=0;
-  if(exact)for(const ids of mesh.triangles)for(const [q,w] of quadrature){
+  let error2=0,integral=0;
+  for(const ids of mesh.triangles){
+    const area=triangleArea(ids.map(id=>mesh.nodes[id]));
+    integral+=area*(u[ids[0]]+u[ids[1]]+u[ids[2]])/3;
+    if(exact)for(const [q,w] of quadrature){
     const x=q.reduce((s,v,i)=>s+v*mesh.nodes[ids[i]][0],0),y=q.reduce((s,v,i)=>s+v*mesh.nodes[ids[i]][1],0),uh=q.reduce((s,v,i)=>s+v*u[ids[i]],0);
-    error2+=w*(uh-exact(x,y))**2/(2*mesh.n**2);
+    error2+=w*(uh-exact(x,y))**2*area;
   }
-  let integral=0;for(const ids of mesh.triangles)integral+=(u[ids[0]]+u[ids[1]]+u[ids[2]])/(6*mesh.n**2);
+  }
   return {min:Math.min(...u),max:Math.max(...u),residual,backwardError:residual/(normA*normB+normF||1),l2:exact?Math.sqrt(error2):null,integral,negativeNodes:Array.from(u).filter(v=>v < -1e-10).length};
 }
 
@@ -263,6 +273,9 @@ export function compute(state){
   const raw=g.slice(),stable=g.slice();mesh.interior.forEach((id,i)=>{raw[id]=rawB[i];stable[id]=stableB[i];});
   const exact=exactSolution(state),reference=exact?mesh.nodes.map(([x,y])=>exact(x,y)):null;
   const metrics={raw:diagnostics(A,F,rawB,raw,mesh,exact),stable:diagnostics(effectiveA,effectiveF,stableB,stable,mesh,exact)};
+  if(state.preset==='afc-affine'&&reference&&afcResult){
+    afcResult.afc.affine={maxNodalError:Math.max(...stable.map((v,i)=>Math.abs(v-reference[i]))),baselineMaxNodalError:Math.max(...raw.map((v,i)=>Math.abs(v-reference[i])))};
+  }
   return {...system,...(afcResult?{afc:afcResult.afc,afcD:afcResult.afcD}:{}),raw,stable,rawB,stableB,reference,effectiveA,effectiveF,metrics,ms:performance.now()-started,
     pe:Math.hypot(...velocity(state))>0?Math.hypot(state.betaX,state.betaY)/(2*state.n*state.epsilon):0,
     effectivePe:Math.hypot(...velocity(state))>0?Math.hypot(state.betaX,state.betaY)/(2*state.n*(state.epsilon+delta)):0};

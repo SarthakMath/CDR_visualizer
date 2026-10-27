@@ -50,3 +50,49 @@ test('signed source data are reported rather than clipped, and unsupported react
  s.reaction=-1;assert.throws(()=>computeTrajectory(s),/c ≥ 0/);s.reaction=0;s.matrixEdits={'0,0':1};assert.throws(()=>computeTrajectory(s),/overrides/);
  const t=preset('afc-layer');t.afcTolerance=0;assert.throws(()=>compute(t),/tolerance/);
 });
+
+test('steady μ controls flux budgets and reproduces the shifted affine patch above its field-specific threshold',()=>{
+ const s={...preset('afc-affine'),pattern:'shifted'},half=compute({...s,afcMu:.5}),one=compute(s),zero=compute({...s,afcMu:0});
+ for(const r of [half,one,zero]){assert.ok(r.afc.converged);assert.ok(r.afc.affine.baselineMaxNodalError<1e-12);}
+ assert.ok(zero.afc.affine.maxNodalError>.05);assert.ok(half.afc.affine.maxNodalError>.02);assert.ok(one.afc.affine.maxNodalError<1e-8);
+ assert.ok(half.afc.affineLimiter.retainedResidual>.005);near(one.afc.affineLimiter.retainedResidual,0,1e-14);
+ const threshold=one.afc.affineLimiter.requiredMu;assert.ok(threshold>.73&&threshold<.74);
+ const at=compute({...s,afcMu:threshold+1e-10});assert.ok(at.afc.affine.maxNodalError<1e-8);
+ // At a fixed field, increasing μ never reduces an edge factor.
+ const graph=buildAfc(s,assemble(s)),u=Float64Array.from(graph.mesh.nodes,([x,y])=>1+x+y),a=steadyFluxes(graph,u,.5),b=steadyFluxes(graph,u,1);
+ a.alpha.forEach((v,i)=>assert.ok(b.alpha[i]>=v-1e-14));
+});
+test('uniform mesh symmetry can preserve the affine patch despite active limiting',()=>{
+ const r=compute({...preset('afc-affine'),pattern:'forward',afcMu:0});
+ assert.ok(r.afc.affine.maxNodalError<1e-12);assert.ok(r.afc.limitedFraction>.5);near(r.afc.affineLimiter.retainedResidual,0,1e-14);
+});
+test('shifted mesh quadrature and cross-section interpolation preserve affine fields',async()=>{
+ const {makeMesh,interpolate,sourceLoad,diagnostics,expression}=await import('../dist/fem.js');
+ for(const n of [2,3,8,16]){
+ const mesh=makeMesh(n,'shifted'),u=Float64Array.from(mesh.nodes,([x,y])=>1+x+y);
+ for(let iy=0;iy<=20;iy++)for(let ix=0;ix<=20;ix++)near(interpolate(mesh,u,ix/20,iy/20),1+ix/20+iy/20,1e-12);
+ const r=compute({...preset('afc-affine'),n,pattern:'shifted'});assert.ok(r.afc.affine.baselineMaxNodalError<1e-12);
+ const metric=diagnostics(new Float64Array(1),new Float64Array(1),new Float64Array(1),u,mesh,(x,y)=>1+x+y);near(metric.integral,2);assert.ok(metric.l2<1e-14);
+ // The unit load is the geometric lumped interior mass, not a uniform-area approximation.
+ const state={...preset('afc-affine'),n,pattern:'shifted'},sys=assemble(state),load=sourceLoad(mesh,expression('1'),state);
+ load.forEach((v,i)=>near(v,sys.lumped[i],1e-14));
+ }
+});
+test('steady μ rejects invalid values and is absent from transient limiter behavior',()=>{
+ for(const afcMu of [-1,NaN,Infinity,10.1])assert.throws(()=>compute({...preset('afc-affine'),afcMu}),/μ/);
+ const s={...preset('afc-front'),n:4,duration:.01};
+ assert.deepEqual(computeTrajectory({...s,afcMu:0}).frames.at(-1).stable,computeTrajectory({...s,afcMu:10}).frames.at(-1).stable);
+});
+
+test('μ = 1 leaves affine fluxes unlimited on every original centrally symmetric mesh pattern',()=>{
+ for(const pattern of ['forward','backward','alternating'])for(const n of [2,5,8]){
+ const s={...preset('afc-affine'),pattern,n,reaction:2},graph=buildAfc(s,assemble(s));
+ for(const i of graph.mesh.interior){const [x,y]=graph.mesh.nodes[i];for(const j of graph.neighbors[i]){
+   const [a,b]=graph.mesh.nodes[j];assert.ok(graph.neighbors[i].some(k=>Math.abs(graph.mesh.nodes[k][0]-(2*x-a))<1e-12&&Math.abs(graph.mesh.nodes[k][1]-(2*y-b))<1e-12));
+ }}
+ for(const [a,b,c] of [[1,0,0],[0,1,0],[1,-1,2],[2,3,-1],[-3,1,4],[0,0,1]]){
+ const u=Float64Array.from(graph.mesh.nodes,([x,y])=>a*x+b*y+c),limited=steadyFluxes(graph,u,1);
+ graph.edges.forEach((e,k)=>{if(graph.mesh.dof[e.i]>=0||graph.mesh.dof[e.j]>=0)near(limited.alpha[k],1,1e-12);});
+ }
+ }
+});

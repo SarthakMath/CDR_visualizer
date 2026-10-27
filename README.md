@@ -1,4 +1,4 @@
-# Visual Elliptic FEM
+# CDR FEM FCT lab
 
 The application and its full experiment guide are in [`CDR_visualizer/README.md`](CDR_visualizer/README.md).
 
@@ -22,14 +22,14 @@ This application is static: no backend, build step, or API keys are required. Th
 
    ```bash
    git add .gitignore .github README.md CDR_visualizer
-   git commit -m "Add Elliptic Lab and GitHub Pages deployment"
+   git commit -m "Add CDR FEM FCT lab and GitHub Pages deployment"
    git branch -M main
    git remote add origin https://github.com/YOUR_USERNAME/CDR_visualizer.git
    git push -u origin main
    ```
 
 3. In the GitHub repository, open **Settings → Pages**. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-4. Open **Actions → Deploy Elliptic Lab to GitHub Pages → Run workflow** and run it on `main`. If the first push ran before Pages was enabled and failed, this manual run retries after configuration.
+4. Open **Actions → Deploy CDR FEM FCT lab to GitHub Pages → Run workflow** and run it on `main`. If the first push ran before Pages was enabled and failed, this manual run retries after configuration.
 5. Wait for a successful deployment. The `github-pages` environment and deployment job show the actual site URL, normally `https://YOUR_USERNAME.github.io/CDR_visualizer/`.
 
 Later pushes to `main` automatically update the site. If you upload files through the GitHub website instead, preserve this workspace's layout: `.github/workflows/deploy-pages.yml` belongs at the repository root, and the app remains in `CDR_visualizer/dist`. Uploading just the inner app folder will not include the workflow provided here.

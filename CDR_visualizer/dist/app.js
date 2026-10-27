@@ -52,11 +52,12 @@ $('timeSlider').addEventListener('input',()=>{stopPlayback();if(!pending)selectF
 for(const[id,change]of [['previousTime',-1],['nextTime',1],['rewindTime',0]])$(id).addEventListener('click',()=>{stopPlayback();if(!pending)selectFrame(change===0?0:frameIndex+change);});
 
 function syncControls(){
-  for(const key of ['mode','epsilon','reaction','betaX','betaY','source','amplitude','pattern','diffusion','stabilization','supgScale','afcMaxIterations','afcTolerance','afcRelaxation'])$(key).value=state[key];
+  for(const key of ['mode','epsilon','reaction','betaX','betaY','source','amplitude','pattern','diffusion','stabilization','supgScale','afcMu','afcMaxIterations','afcTolerance','afcRelaxation'])$(key).value=state[key];
   for(const side of ['left','right','bottom','top'])$(`bc-${side}`).value=state.boundaries[side];
   $('meshSize').value=state.n;$('meshSizeLabel').textContent=`${state.n} × ${state.n}`;
   $('diffusionSlider').max=Math.max(.15,state.diffusion);$('diffusionSlider').value=state.diffusion;$('diffusionMax').textContent=short(+$('diffusionSlider').max);
   $('afcControls').classList.toggle('hidden',!isAfc(state));$('afcSteadyControls').classList.toggle('hidden',isTransient(state));
+  $('afcMu').disabled=state.stabilization==='afc-low';
   $('massType').disabled=isAfc(state);
   $('massHelp').textContent=isAfc(state)?'AFC comparison: lumped mass, SSPRK2, automatic CFL substeps. Baseline: consistent mass and the selected time integrator. Reaction stays in the assembled operator.':'Original: consistent M, δ = 0. Comparison: selected mass and stabilization. Reaction cM stays consistent in both. Both use the same time integrator. Up to 240 steps.';
   $('supgControls').classList.toggle('hidden',state.stabilization!=='supg');$('isotropicControls').classList.toggle('hidden',state.stabilization!=='isotropic');
@@ -76,6 +77,9 @@ function syncControls(){
 function updateSummary(){
   const r=result,afc=r.afc;
   $('afcStatus').textContent=!afc?(trajectory&&frameIndex===0?'Initial state · 0 AFC substeps completed.':'Solve to see AFC cost.'):afc.kind==='steady'?`${afc.converged?'Converged':'ITERATION LIMIT — last iterate'} · ${afc.iterations} iteration${afc.iterations===1?'':'s'} · residual ${afc.nonlinearResidual.toExponential(2)} · ${(100*afc.limitedFraction).toFixed(0)}% limited edges · ${afc.ms.toFixed(0)} ms AFC`:`SSPRK2 · ${afc.substeps} substep${afc.substeps===1?'':'s'} this frame · ${afc.totalSubsteps} so far · ${afc.limiterPasses} limiter passes this frame · ${(100*afc.limitedFraction).toFixed(0)}% limited edges · ${afc.ms.toFixed(0)} ms AFC${afc.dataNonnegative?'':' · signed data: positivity not asserted'}`;
+  const affine=afc?.affine,probe=afc?.affineLimiter;
+  $('affineStatus').classList.toggle('hidden',!affine||!isAfc(state));
+  $('affineStatus').textContent=affine?`Affine test u = 1+x+y · max nodal error ${affine.maxNodalError.toExponential(2)} (Galerkin ${affine.baselineMaxNodalError.toExponential(2)}) · max retained affine edge flux ${probe.maxLimitedFlux.toExponential(2)} · retained-diffusion residual at exact field ${probe.retainedResidual.toExponential(2)} · μ ≥ ${probe.requiredMu.toFixed(4)} removes limiting on this field only.${afc.converged?'':' Solve unconverged: nodal error includes iteration error.'}`:'';
   $('tauSummary').textContent=`Element τ: ${r.tauRange.map(v=>short(v)).join(' – ')}${Math.hypot(...velocity(state))===0?' · no flow, SUPG is zero':''}`;$('nodeCount').textContent=r.mesh.nodes.length;$('elementCount').textContent=r.mesh.triangles.length;$('dofCount').textContent=r.N;
   $('systemSize').textContent=`${r.N} unknowns`;$('matrixShape').textContent=`${r.N} × ${r.N}`;
   const count=Object.keys(state.matrixEdits).length+Object.keys(state.rhsEdits).length+Object.keys(state.nodeEdits).length;$('editCount').textContent=`${count} override${count===1?'':'s'}`;
@@ -87,6 +91,7 @@ function updateSummary(){
   let note;
   if(count)note=`${count} algebraic or boundary override${count===1?' is':'s are'} active. The original PDE reference no longer applies. Changes to mesh or triangulation clear these edits.`;
   else if(trajectory&&r.initialMismatch)note=`Initial and boundary data disagree at ${r.initialMismatch} boundary nodes. Prescribed boundary values take precedence; the two runs share the same initial interior field.`;
+  else if(affine)note=`Affine patch u = 1+x+y. On the original centrally symmetric meshes, μ = 1 is sufficient for linearity preservation. Try μ = 0.25 and 1, then the optional shifted-node mesh with μ = 0.5 and 1. Check retained edge fluxes as well as nodal error: cancellation can reproduce an affine field despite active limiting. The reported threshold concerns this field only.${afc?.converged===false?' The nonlinear solve is not converged.':''}`;
   else if(isAfc(state)&&state.stabilization==='afc-low')note='The low-order comparison retains all graph diffusion. It needs no nonlinear limiter iteration and is deliberately diffusive. Switch to AFC limited flux correction to recover sharper layers.';
   else if(isAfc(state))note=trajectory?'AFC limits antidiffusive edge fluxes without clipping nodal values. Compare low-order graph diffusion to see what flux correction restores. The comparison uses SSPRK2 substeps; the baseline uses the selected time integrator. Positivity and accuracy are separate checks.':`AFC uses a nonlinear BJK-type limiter and reuses one low-order LU factorization. ${afc?.converged===false?'The iteration limit was reached; this is the last unconverged iterate.':'Compare the sharpened layer with the low-order graph-diffusion solution.'}`;
   else if(state.stabilization==='supg')note=`SUPG adds residual stabilization along the flow (τ = ${r.tauRange.map(v=>short(v)).join(' – ')}). Compare extrema and L² error: oscillations can remain. Switch to isotropic diffusion to compare spreading across the flow; refine the mesh to resolve the layer.`;
@@ -162,7 +167,7 @@ for(const key of ['initial','dt','duration','scheme','massType'])$(key).addEvent
 $('matrixPicker').addEventListener('change',()=>{selectEditor('matrix');render();});
 for(const side of ['left','right','bottom','top'])$(`bc-${side}`).addEventListener('input',()=>{state.boundaries[side]=$(`bc-${side}`).value;schedule();});
 $('stabilization').addEventListener('change',()=>{state.stabilization=$('stabilization').value;if(isAfc(state))state.massType='lumped';syncControls();setField('stable');schedule();});
-for(const key of ['afcMaxIterations','afcTolerance','afcRelaxation'])$(key).addEventListener('input',()=>{state[key]=$(key).value.trim()===''?NaN:Number($(key).value);schedule();});
+for(const key of ['afcMu','afcMaxIterations','afcTolerance','afcRelaxation'])$(key).addEventListener('input',()=>{state[key]=$(key).value.trim()===''?NaN:Number($(key).value);schedule();});
 $('supgScale').addEventListener('input',()=>{state.supgScale=$('supgScale').value.trim()===''?NaN:Number($('supgScale').value);schedule();});
 $('diffusion').addEventListener('input',()=>{state.diffusion=$('diffusion').value.trim()===''?NaN:Number($('diffusion').value);if(Number.isFinite(state.diffusion)){$('diffusionSlider').max=Math.max(.15,state.diffusion);$('diffusionSlider').value=state.diffusion;$('diffusionMax').textContent=short(+$('diffusionSlider').max);}schedule();});
 $('diffusionSlider').addEventListener('input',()=>{state.diffusion=+$('diffusionSlider').value;$('diffusion').value=state.diffusion;schedule();});
@@ -222,7 +227,7 @@ $('export').addEventListener('click',()=>{
     nodes:r.mesh.nodes,triangles:r.mesh.triangles,interiorNodeIds:r.mesh.interior,solutions:{original:Array.from(r.raw),stabilized:Array.from(r.stable),exactAtNodes:r.reference?Array.from(r.reference):null},
     system:{size:r.N,A:sparse(r.A),K:sparse(r.K),M:sparse(r.M),supgSpatial:sparse(r.S),supgTime:sparse(r.H),tauRange:r.tauRange,afc:r.afc,afcD:r.afcD?sparse(r.afcD):null,lumpedMassDiagonal:Array.from(r.lumped),f:Array.from(r.F),stabilizedA:sparse(r.effectiveA),stabilizedF:Array.from(r.effectiveF)},metrics:r.metrics};
   if(trajectory){data.system.comparisonMass=sparse(r.comparisonMass);data.time=r.time;data.trajectory=trajectory.frames.map(f=>({time:f.time,dt:f.dt,original:Array.from(f.raw),comparison:Array.from(f.stable),metrics:f.metrics,afc:f.afc}));data.system.timeStepMatrix=sparse(r.timeMatrix);data.system.comparisonTimeStepMatrix=r.stableTimeMatrix?sparse(r.stableTimeMatrix):null;data.system.timeStepRhs=r.rawRhs?Array.from(r.rawRhs):null;data.system.comparisonTimeStepRhs=r.stableRhs?Array.from(r.stableRhs):null;}
-  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`elliptic-lab-${state.preset}-n${state.n}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Exported experiment, mesh, matrices, and solutions as JSON.');
+  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`cdr-fem-fct-lab-${state.preset}-n${state.n}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Exported experiment, mesh, matrices, and solutions as JSON.');
 });
 new ResizeObserver(()=>requestAnimationFrame(render)).observe(document.querySelector('main'));
 syncControls();schedule();
