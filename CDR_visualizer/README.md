@@ -210,7 +210,7 @@ The L² value is a seven-point quadrature estimate of the continuous piecewise-l
 ## Source and verification
 
 - `dist/fem.js`: mesh, expression parser, element assembly, boundary elimination, direct solve, interpolation, and diagnostics.
-- `dist/transient.js`: reusable LU factors, consistent/lumped mass time stepping, time-dependent boundary lifting, and trajectory generation.
+- `dist/transient.js`: consistent/lumped mass time stepping, time-dependent boundary lifting, and trajectory generation.
 - `dist/worker.js`: asynchronous steady solve and trajectory computation with progress updates.
 - `dist/plots.js`: dependency-free Canvas surface/heatmap, mesh, cross-section, and sparsity plot.
 - `dist/app.js`: controls, matrix edits, inspectors, and JSON export.
@@ -299,7 +299,7 @@ The steady comparison is (A+S)b = F+Q−SIBg. The transient comparison is
     = FI + QI − (AIB + SIB)g − (M*IB + HIB)ġ,
 ```
 
-where M* is consistent or full-row-sum lumped mass. The same θ step is applied to every term. Even with lumped M*, HIB contributes to changing-boundary lifting. Source corrections use the same degree-five quadrature as Galerkin. Reaction uses consistent cM; SUPG also includes its cH residual contribution. Matrix inspectors expose S, H, and the actual comparison time mass; JSON v3 exports them.
+where M* is consistent or full-row-sum lumped mass. The same θ step is applied to every term. Even with lumped M*, HIB contributes to changing-boundary lifting. Source corrections use the same degree-five quadrature as Galerkin. Reaction uses consistent cM; SUPG also includes its cH residual contribution. Matrix inspectors expose S, H, and the actual comparison time mass; JSON v4 exports them.
 
 The default coefficient is a documented heuristic based on the classical 1D coth choice:
 
@@ -316,3 +316,51 @@ See the [pyoomph SUPG derivation](https://pyoomph.readthedocs.io/en/latest/tutor
 SUPG is not shock capturing, flux correction, or a discrete maximum-principle guarantee. It adds no crosswind diffusion; layers perpendicular to its stabilizing direction can remain troublesome. It vanishes when β = 0, so it cannot fix a pure reaction–diffusion layer. Resolve such layers with mesh refinement. Matrix/load overrides retain the physical PDE's S, H, and Q; after arbitrary algebraic edits the combination is no longer residual-consistent with the edited equation.
 
 `tests/supg.test.mjs` checks zero-flow/zero-strength limits, τ limits, steady and time-dependent affine ADR patches across all mesh patterns and both mass/time choices, changing-boundary H lifting, absence of crosswind stiffness, and the measured layer comparisons above.
+
+## Algebraic flux correction (AFC)
+
+Select **Steady AFC layer** or **Nonnegative moving front** under **Flux correction**. The comparison selector now offers **AFC · low-order graph diffusion** and **AFC · limited flux correction**. These are alternatives to SUPG and isotropic diffusion, not extra terms stacked on top of them.
+
+AFC is nonlinear even for a linear PDE: its limiter depends on the solution. That does not always require a nonlinear system solve. This app uses iterative steady AFC and explicit transient flux-corrected transport (FCT):
+
+| Method | Comparison computation | Cost reported |
+| --- | --- | --- |
+| Steady low order | One linear solve with graph diffusion | Solve time, zero limiter iterations |
+| Steady limited AFC | Damped fixed-point iterations; one reused LU factorization | Iterations, scaled nonlinear residual, convergence, AFC time |
+| Transient low order | Lumped-mass SSPRK2 with graph diffusion | Internal substeps and stepping time |
+| Transient limited FCT | Same SSPRK2 stages plus pairwise flux limiting | Internal substeps, limiter passes, stepping time |
+
+### Steady layer experiment
+
+1. Choose **Steady AFC layer**. Defaults are n = 16, ε = 0.005, β = (1,0), c = 0, source = 1, tolerance = 1e−8, relaxation = 0.5, and at most 500 iterations.
+2. Select **With AFC** above the plot. The uncorrected Galerkin maximum is about 1.846. Limited AFC gives about 0.9643; switching to **AFC · low-order graph diffusion** gives about 0.9375. Compare the cross-section with the exact curve: the thin boundary layer remains unresolved.
+3. On the tested machine the corrected steady solve took about 55 ms overall, including about 38 ms inside AFC, and converged in 110 iterations. These are illustrative timings, not a speed guarantee. Mesh size, tolerance, and relaxation affect cost; refinement also increases the cost of the dense LU factorization.
+4. Set the iteration limit to 1 to inspect failure reporting. The app labels the result **AFC iteration limit** and reports the last iterate and its residual; it does not mark it converged. Restore 500. If another case stalls, try smaller relaxation or mesh refinement and inspect the residual; convergence is not guaranteed by increasing the limit.
+
+The stopping residual is the infinity norm of `L b − (F_low + limited_flux(b))`, scaled by the largest rowwise sum of absolute matrix contributions plus the absolute corrected right-hand side. A converged algebraic residual is separate from discretization error.
+
+### Moving-front experiment
+
+1. Choose **Nonnegative moving front**: n = 24, β = (0.55,0), ε = c = 0, Δt = 0.005, T = 0.8. Select **Comparison**, then play or scrub to the last frame.
+2. The consistent-mass Crank–Nicolson baseline reaches approximately −0.232 / 1.177. Limited FCT stays nonnegative in this experiment, with maximum about 0.934 and zero negative nodes. Values are not clipped after solving.
+3. Switch to **AFC · low-order graph diffusion** at the same time: the peak falls to about 0.428. Flux correction restores much of the sharp profile lost to graph diffusion. Switch to SUPG separately to compare its remaining undershoot and smaller error in this example.
+4. Check accuracy as well as extrema. At T = 0.8, quadrature L² errors are approximately 0.0566 for the baseline, 0.1273 for low order, and 0.0685 for FCT. Removing negative values does not necessarily minimize L² error.
+5. Increase Δt or physical diffusion to see automatic internal substeps. The requested output times remain the same, while the comparison divides each interval to satisfy its explicit low-order positivity restriction. The status shows substeps and limiter passes for the selected interval, cumulative substeps, and cumulative AFC stepping time. At time zero no steps have occurred.
+
+The default moving-front trajectory took about 0.9 s overall in one local run, including about 44 ms of AFC stepping over 160 internal steps. The remaining work includes the consistent baseline, assembly, and diagnostics. The two SSPRK2 stages each evaluate a nonlinear limiter directly; they do not run Newton or fixed-point iterations. Stiff diffusion/reaction or finer meshes can require many more substeps, so explicit FCT may then be slower than an implicit method. The app stops with an explanation if more than 50,000 internal steps would be needed.
+
+**Comparison convention:** the baseline still uses the selected backward-Euler or Crank–Nicolson method with consistent mass. AFC uses lumped mass and SSPRK2 regardless of that selection. Thus comparing those two curves changes both spatial stabilization and time discretization. To isolate flux correction, compare the two AFC options; they share the same mass, time integrator, and internal step sizes. Transient antidiffusion corrects the spatial graph viscosity only; it does not restore consistent mass.
+
+### Operator, limiter, and limits
+
+The full nodal operator is `A = εK + C + cM`, assembled before Dirichlet elimination. Symmetric graph diffusion has off-diagonals `D_ij = −max(0, A_ij, A_ji)` and diagonal entries chosen for zero row sums. Consequently `L = A + D` has nonpositive off-diagonals. Graph diffusion includes boundary edges and the positive off-diagonal contributions of consistent reaction; it is not just a scalar multiple of K. The reduced D shown in the inspector need not have zero row sums after boundary columns are eliminated.
+
+Steady AFC uses a BJK-type symmetric local-extremum limiter with μ = 1. It restores a limited portion of each antisymmetric edge flux and solves repeatedly with the same L. This is an educational variant; it makes no claim of linearity preservation on every mesh patch. See [this primary article's BJK limiter discussion](https://link.springer.com/article/10.1007/s11075-023-01511-2) and [Jha and John's study of nonlinear AFC iteration schemes](https://www.wias-berlin.de/publications/wias-publ/run.jsp?number=2533&template=abstract&type=Preprint&year=).
+
+Each transient Euler stage starts with a lumped-mass low-order update. Zalesak-style nodal flux budgets constrain pairwise corrections using neighboring old and low-order values. Equal and opposite corrections preserve the interior pair contribution to lumped mass; Dirichlet boundaries, forcing, and reaction can change the total integral. SSPRK2 combines two such stages. Internal steps satisfy `h ≤ 0.8 min_i(m_i / L_ii)` over positive interior diagonals.
+
+This implementation accepts c ≥ 0 and assembled PDE coefficients. Clear manual A/f overrides before selecting AFC; changing the physical source expression or boundary data remains supported. Signed initial data, sources, and boundary values are allowed and may legitimately produce negative solutions. Transient nonnegativity relies on nonnegative discrete input/load/boundary data and the enforced step restriction, up to floating-point tolerance. The status flags signed data rather than claiming positivity. AFC is neither a universal accuracy improvement nor a cure for insufficient mesh resolution.
+
+JSON export v4 includes AFC convergence/substep metadata and graph D. For steady AFC, `stabilizedA` contains the retained graph diffusion at the returned iterate. For transient AFC, `stabilizedA` and `stabilizedF` describe the **low-order backbone**; nonlinear corrections are applied separately at each explicit stage. There is no single implicit comparison step matrix or right-hand side, so those export fields are null and the step-matrix inspector is disabled. The comparison's implicit backward-error metric is also unavailable. SUPG exports remain included.
+
+`dist/afc.js` implements graph construction, steady limiting, FCT stages, and automatic substeps. `dist/linear.js` holds the shared LU routines. Seven checks in `tests/afc.test.mjs` cover graph signs and conservation, bounded pair fluxes, nonlinear convergence and iteration-limit reporting, moving-front nonnegativity/sharpness, changing-boundary manufactured solutions on all three meshes, signed data, and unsupported input rejection. Together with the existing checks, the test suite contains 43 tests. These finite tests do not establish accuracy or convergence for arbitrary input.

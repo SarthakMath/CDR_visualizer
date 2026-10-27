@@ -1,17 +1,18 @@
+import {isAfc,solveAfcSteady} from './afc.js';
 // Linear (P1) triangular Galerkin finite elements. No numerical dependencies.
 export const layerTrace = 'x-(exp((x-1)/eps)-exp(-1/eps))/(1-exp(-1/eps))';
 export const sharpQ = '(x-(exp((x-1)/0.025)-exp(-40))/(1-exp(-40)))';
 export const isTransient = state => ['heat','advection','parabolic','reaction','diffusion-reaction','advection-reaction','adr'].includes(state.mode);
 export const velocity = state => ['transport','advection','parabolic','advection-reaction','adr','steady-adr'].includes(state.mode)?[state.betaX,state.betaY]:[0,0];
 export const physicalDiffusion = state => ['advection','advection-reaction','reaction'].includes(state.mode)?0:state.epsilon;
-export const addedDiffusion = state => ['none','supg'].includes(state.stabilization)?0:state.diffusion;
+export const addedDiffusion = state => ['none','supg','afc','afc-low'].includes(state.stabilization)?0:state.diffusion;
 export const frontInitial = '0.5*(tanh((x-0.15)/0.015)-tanh((x-0.35)/0.015))*exp(-((y-0.5)/0.18)^2)';
 const movingFront = frontInitial.replace(/\bx\b/g,'(x-vx*t)').replace(/\by\b/g,'(y-vy*t)');
 const gaussian = (cx,cy,s2) => `${s2}/(${s2}+4*eps*t)*exp(-((x-${cx}-vx*t)^2+(y-${cy}-vy*t)^2)/(${s2}+4*eps*t))`;
 export function preset(name = 'poisson') {
   const s = { preset:name, mode:'poisson', n:16, pattern:'forward', epsilon:1,
     betaX:0, betaY:0, reaction:0, source:'2*pi^2*sin(pi*x)*sin(pi*y)', amplitude:1,
-    boundaries:{left:'0',right:'0',bottom:'0',top:'0'}, diffusion:0,stabilization:'isotropic',supgScale:1,
+    boundaries:{left:'0',right:'0',bottom:'0',top:'0'}, diffusion:0,stabilization:'isotropic',supgScale:1,afcMaxIterations:500,afcTolerance:1e-8,afcRelaxation:.5,
     matrixEdits:{}, rhsEdits:{}, nodeEdits:{},initial:'sin(pi*x)*sin(pi*y)',dt:0.005,duration:0.8,scheme:'be',massType:'consistent' };
   if (name === 'layer') Object.assign(s, {mode:'transport',epsilon:0.005,betaX:1,source:'1',
     boundaries:{left:'0',right:'0',bottom:layerTrace,top:layerTrace}});
@@ -30,6 +31,8 @@ export function preset(name = 'poisson') {
     const q=`(${layerTrace})`,trace=`(1-exp(-t))*${q}`;
     Object.assign(s,{mode:'adr',epsilon:.005,betaX:1,reaction:.5,source:`exp(-t)*${q}+(1-exp(-t))*(1+c*${q})`,initial:'0',duration:1,dt:.01,scheme:'cn',stabilization:'supg',boundaries:{left:'0',right:'0',bottom:trace,top:trace}});
   }
+  if(name==='afc-front')Object.assign(s,preset('supg-front'),{preset:name,stabilization:'afc',massType:'lumped'});
+  if(name==='afc-layer')Object.assign(s,preset('supg-layer'),{preset:name,stabilization:'afc'});
   return s;
 }
 
@@ -144,7 +147,7 @@ export function assemble(state) {
   if(!Number.isFinite(epsilon)||epsilon<0||(!isTransient(state)&&epsilon===0))throw Error('Physical diffusion ε must be positive for steady problems and nonnegative for time-dependent problems.');
   for(const key of ['betaX','betaY','amplitude','diffusion'])if(!Number.isFinite(state[key]))throw Error(`${key} must be finite.`);
   if(!Number.isFinite(state.reaction??0))throw Error('Reaction coefficient c must be finite.');
-  if(!['none','isotropic','supg'].includes(state.stabilization??'isotropic'))throw Error('Unknown stabilization method.');
+  if(!['none','isotropic','supg','afc','afc-low'].includes(state.stabilization??'isotropic'))throw Error('Unknown stabilization method.');
   if(!Number.isFinite(state.supgScale??1)||(state.supgScale??1)<0)throw Error('SUPG strength must be finite and nonnegative.');
   if(state.diffusion<0)throw Error('Artificial diffusion must be nonnegative.');
   const mesh=makeMesh(n,state.pattern),N=mesh.interior.length;
@@ -209,7 +212,7 @@ export function exactSolution(state){
   if(state.mode!==clean.mode||state.source!==clean.source||state.amplitude!==1||(!isTransient(state)&&(state.betaX!==clean.betaX||state.betaY!==clean.betaY))||Object.keys(state.matrixEdits).length||Object.keys(state.rhsEdits).length||Object.keys(state.nodeEdits).length||Object.keys(clean.boundaries).some(k=>state.boundaries[k]!==clean.boundaries[k]))return null;
   if(state.preset==='steady-adr')return(x,y)=>Math.sin(Math.PI*x)*Math.sin(Math.PI*y);
   if(state.preset==='forming-layer'){if(state.initial!==clean.initial||state.betaX!==1||state.betaY!==0)return null;const q=expression(layerTrace);return(x,y,t=0)=>(1-Math.exp(-t))*q(x,y,state.epsilon);}
-  if(state.preset==='supg-front'){if(state.initial!==clean.initial)return null;const fn=expression(frontInitial),[vx,vy]=velocity(state);return(x,y,t=0)=>Math.exp(-(state.reaction??0)*t)*fn(x-vx*t,y-vy*t);}
+  if(['supg-front','afc-front'].includes(state.preset)){if(state.initial!==clean.initial)return null;const fn=expression(frontInitial),[vx,vy]=velocity(state);return(x,y,t=0)=>Math.exp(-(state.reaction??0)*t)*fn(x-vx*t,y-vy*t);}
   if((state.reaction??0)!==0&&!['reaction-decay','diffusion-reaction','advection-reaction','adr-pulse'].includes(state.preset))return null;
   if(isTransient(state)){
     if(state.initial!==clean.initial)return null;
@@ -219,7 +222,7 @@ export function exactSolution(state){
     const[cx,cy,s2]=state.preset==='heat-pulse'?[.5,.5,.000625]:[.25,.4,.0049];
     return(x,y,t=0)=>{const w=s2+4*eps*t;return Math.exp(-(state.reaction??0)*t)*s2/w*Math.exp(-((x-cx-vx*t)**2+(y-cy-vy*t)**2)/w);};
   }
-  if(['layer','supg-layer'].includes(state.preset))return (x)=>x-(Math.exp((x-1)/state.epsilon)-Math.exp(-1/state.epsilon))/(-Math.expm1(-1/state.epsilon));
+  if(['layer','supg-layer','afc-layer'].includes(state.preset))return (x)=>x-(Math.exp((x-1)/state.epsilon)-Math.exp(-1/state.epsilon))/(-Math.expm1(-1/state.epsilon));
   if(state.preset==='sharp'){const q=expression(sharpQ);return(x,y)=>q(x,y)*Math.sin(Math.PI*y)/state.epsilon;}
   return(x,y)=>Math.sin(Math.PI*x)*Math.sin(Math.PI*y)/state.epsilon;
 }
@@ -253,13 +256,14 @@ export function diagnostics(A,F,b,u,mesh,exact,rows=null){
 
 export function compute(state){
   const started=performance.now(),system=assemble(state),{A,K,F,lift,N,mesh,g}=system,delta=addedDiffusion(state);
-  const effectiveA=A.map((a,k)=>a+delta*K[k]+system.S[k]),effectiveF=F.map((f,i)=>f+delta*lift[i]+system.supgF[i]);
+  let effectiveA=A.map((a,k)=>a+delta*K[k]+system.S[k]),effectiveF=F.map((f,i)=>f+delta*lift[i]+system.supgF[i]);
   for(const[row,id,,,,s]of system.boundaryTerms)effectiveF[row]-=s*g[id];
-  const rawB=solveDense(A,F),stableB=delta>0||state.stabilization==='supg'?solveDense(effectiveA,effectiveF):rawB.slice();
+  const rawB=solveDense(A,F);let afcResult=null,stableB=delta>0||state.stabilization==='supg'?solveDense(effectiveA,effectiveF):rawB.slice();
+  if(isAfc(state)){afcResult=solveAfcSteady(state,system);({stableB,effectiveA,effectiveF}=afcResult);}
   const raw=g.slice(),stable=g.slice();mesh.interior.forEach((id,i)=>{raw[id]=rawB[i];stable[id]=stableB[i];});
   const exact=exactSolution(state),reference=exact?mesh.nodes.map(([x,y])=>exact(x,y)):null;
   const metrics={raw:diagnostics(A,F,rawB,raw,mesh,exact),stable:diagnostics(effectiveA,effectiveF,stableB,stable,mesh,exact)};
-  return {...system,raw,stable,rawB,stableB,reference,effectiveA,effectiveF,metrics,ms:performance.now()-started,
+  return {...system,...(afcResult?{afc:afcResult.afc,afcD:afcResult.afcD}:{}),raw,stable,rawB,stableB,reference,effectiveA,effectiveF,metrics,ms:performance.now()-started,
     pe:Math.hypot(...velocity(state))>0?Math.hypot(state.betaX,state.betaY)/(2*state.n*state.epsilon):0,
     effectivePe:Math.hypot(...velocity(state))>0?Math.hypot(state.betaX,state.betaY)/(2*state.n*(state.epsilon+delta)):0};
 }

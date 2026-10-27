@@ -56,3 +56,7 @@ The app now includes a constant reaction coefficient c in steady and transient s
 ## Layers and SUPG
 
 Three layer experiments now compare Galerkin with full residual SUPG or isotropic artificial diffusion: a steady outflow layer, a moving interior front, and a developing transient boundary layer. See [the SUPG experiment guide](CDR_visualizer/README.md#layers-and-supg-three-reproducible-comparisons) for reproducible settings, results, and limitations.
+
+## Algebraic flux correction
+
+Try **Steady AFC layer** and **Nonnegative moving front** under **Flux correction**. Compare the low-order graph-diffusion method with limited flux correction. The steady method reports nonlinear iterations and convergence; transient FCT uses lumped mass and explicit SSPRK2 with automatic internal substeps. See [the AFC experiment guide](CDR_visualizer/README.md#algebraic-flux-correction-afc) for reproducible examples, costs, and limitations.

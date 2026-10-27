@@ -1,4 +1,4 @@
-import {interpolate,exactSolution,isTransient} from './fem.js';
+import {interpolate,exactSolution} from './fem.js';
 const palette=[[36,74,128],[67,142,179],[127,188,182],[224,214,161],[239,177,107],[220,116,68],[187,67,59]];
 export function color(t,alpha=1){
   t=Math.max(0,Math.min(1,t));const k=t*(palette.length-1),i=Math.min(palette.length-2,Math.floor(k)),v=k-i;
@@ -66,8 +66,9 @@ export function crossPlot(canvas,result,state,slice){const{ctx,w,h}=setup(canvas
   for(let i=0;i<=4;i++){const y=lo+(hi-lo)*i/4,p=xy(0,y);line(ctx,[[left,p[1]],[w-right,p[1]]],'#edf1f5',1);text(ctx,short(y),left-9,p[1]+3,'right',undefined,'8px "IBM Plex Mono", monospace');const x=i/4,q=xy(x,lo);text(ctx,String(x),q[0],h-15,'center',undefined,'8px "IBM Plex Mono", monospace');}
   const draw=(vs,stroke,width,dash=[])=>line(ctx,vs.map((v,i)=>xy(i/count,v)),stroke,width,dash);
   if(reference.length)draw(reference,'#8194a7',1.5,[4,4]);
-  if(state.diffusion>0||(isTransient(state)&&state.massType==='lumped'))draw(stable,'#208c88',2);
   draw(raw,'#dd673b',1.8);
+  // Every comparison method supplies a solution, including AFC and SUPG at δ = 0.
+  draw(stable,'#208c88',2);
   if(result.mesh.n<=32)for(let i=0;i<=result.mesh.n;i++){const x=i/result.mesh.n,p=xy(x,interpolate(result.mesh,result.raw,x,slice));ctx.beginPath();ctx.arc(p[0],p[1],2,0,Math.PI*2);ctx.fillStyle='#dd673b';ctx.fill();}
   text(ctx,'x',w-10,h-15,'center',undefined,'italic 11px Georgia');
 }
