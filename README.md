@@ -48,3 +48,11 @@ git push origin main
 ```
 
 This push starts a new workflow run automatically. The static upload path must match the checked-in app directory, currently `CDR_visualizer/dist`.
+
+## Advection–diffusion–reaction
+
+The app now includes a constant reaction coefficient c in steady and transient solvers, with pure reaction, diffusion–reaction, advection–reaction, and full ADR examples. Positive c causes decay; negative c causes growth. See [the reaction experiment guide](CDR_visualizer/README.md#reaction-experiments-decay-growth-and-transport) for decay, moving-layer, and stiff-reaction comparisons, including the precise mass-lumping convention.
+
+## Layers and SUPG
+
+Three layer experiments now compare Galerkin with full residual SUPG or isotropic artificial diffusion: a steady outflow layer, a moving interior front, and a developing transient boundary layer. See [the SUPG experiment guide](CDR_visualizer/README.md#layers-and-supg-three-reproducible-comparisons) for reproducible settings, results, and limitations.

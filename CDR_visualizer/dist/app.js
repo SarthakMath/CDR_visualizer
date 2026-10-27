@@ -1,10 +1,11 @@
-import {preset,exactSolution,isTransient,velocity,physicalDiffusion} from './fem.js';
+import {preset,exactSolution,isTransient,velocity,physicalDiffusion,addedDiffusion} from './fem.js';
 import {meshPlot,surfacePlot,crossPlot,matrixPlot,fieldValues,short} from './plots.js';
 const $=id=>document.getElementById(id);
 let state=preset(),result=null,solvedState=null,requestId=0,timer,toastTimer,selected=null,editor='matrix';
 let camera={yaw:-.66,elevation:.67},view='surface',field='raw',showMesh=true,slice=.5,points=[],meshPoints=[],pending=false;
 let trajectory=null,frameIndex=0,selectedTime=0,playing=false,playRequest=0,lastPlayback=0;
 const worker=new Worker(new URL('./worker.js',import.meta.url),{type:'module'});
+const methodLabel=()=>state.stabilization==='supg'?`SUPG × ${state.supgScale}`:state.stabilization==='none'?'no stabilization':`isotropic δ = ${short(state.diffusion)}`;
 const format=v=>Math.abs(v)<1e-12?'0.000':Math.abs(v)<.001||Math.abs(v)>9999?v.toExponential(2):v.toFixed(3);
 function toast(message){$('toast').textContent=message;$('toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hidden'),4000);}
 function failure(message){$('errorBanner').textContent=message+' The plots show the last successful solve.';$('errorBanner').classList.remove('hidden');$('solveState').textContent='Check inputs';document.querySelector('.plot-card').classList.add('stale');$('export').disabled=true;pending=false;}
@@ -30,7 +31,7 @@ function selectFrame(index){
     stableTimeMatrix:frameIndex===trajectory.steps?trajectory.lastStableTimeMatrix:trajectory.stableTimeMatrix};
   $('timeSlider').max=trajectory.steps;$('timeSlider').value=frameIndex;$('currentTime').textContent=`t = ${format(f.time)}`;
   $('frameCounter').textContent=`Frame ${frameIndex} / ${trajectory.steps}`;
-  $('timelineNote').textContent=`${state.scheme==='be'?'Backward Euler':'Crank–Nicolson'} · Δt = ${Number(f.dt.toPrecision(5))} · comparison: ${state.massType==='lumped'?'lumped':'consistent'} M, δ = ${Number(state.diffusion.toPrecision(5))}`;
+  $('timelineNote').textContent=`${state.scheme==='be'?'Backward Euler':'Crank–Nicolson'} · Δt = ${Number(f.dt.toPrecision(5))} · comparison: ${state.massType==='lumped'?'lumped':'consistent'} M · ${methodLabel()}`;
   for(const id of ['playTime','previousTime','nextTime','rewindTime','timeSlider'])$(id).disabled=pending;
   $('previousTime').disabled=pending||frameIndex===0;$('nextTime').disabled=pending||frameIndex===trajectory.steps;
   updateSummary();updateEditor();render();
@@ -49,37 +50,44 @@ $('timeSlider').addEventListener('input',()=>{stopPlayback();if(!pending)selectF
 for(const[id,change]of [['previousTime',-1],['nextTime',1],['rewindTime',0]])$(id).addEventListener('click',()=>{stopPlayback();if(!pending)selectFrame(change===0?0:frameIndex+change);});
 
 function syncControls(){
-  for(const key of ['mode','epsilon','betaX','betaY','source','amplitude','pattern','diffusion'])$(key).value=state[key];
+  for(const key of ['mode','epsilon','reaction','betaX','betaY','source','amplitude','pattern','diffusion','stabilization','supgScale'])$(key).value=state[key];
   for(const side of ['left','right','bottom','top'])$(`bc-${side}`).value=state.boundaries[side];
   $('meshSize').value=state.n;$('meshSizeLabel').textContent=`${state.n} × ${state.n}`;
   $('diffusionSlider').max=Math.max(.15,state.diffusion);$('diffusionSlider').value=state.diffusion;$('diffusionMax').textContent=short(+$('diffusionSlider').max);
-  const temporal=isTransient(state),convective=['transport','advection','parabolic'].includes(state.mode);
-  $('velocityFields').classList.toggle('hidden',!convective);$('epsilon').disabled=state.mode==='advection';
-  for(const id of ['timeControls','timeline','timeDiagnostics','matrixPickerWrap'])$(id).classList.toggle('hidden',!temporal);
+  $('supgControls').classList.toggle('hidden',state.stabilization!=='supg');$('isotropicControls').classList.toggle('hidden',state.stabilization!=='isotropic');
+  const temporal=isTransient(state),convective=Math.hypot(...velocity({...state,betaX:1,betaY:1}))>0;
+  $('velocityFields').classList.toggle('hidden',!convective);$('epsilon').disabled=['advection','advection-reaction','reaction'].includes(state.mode);
+  for(const id of ['timeControls','timeline','timeDiagnostics'])$(id).classList.toggle('hidden',!temporal);
+  $('matrixPickerWrap').classList.remove('hidden');
+  for(const option of $('matrixPicker').options)option.disabled=!temporal&&['ML','step','comparisonMass'].includes(option.value);
   for(const key of ['initial','dt','duration','scheme','massType'])$(key).value=state[key];
-  $('pdeLabel').textContent={poisson:'−εΔu = f',transport:'−εΔu + β·∇u = f',heat:'uₜ − εΔu = f',advection:'uₜ + β·∇u = f',parabolic:'uₜ − εΔu + β·∇u = f'}[state.mode];
+  $('pdeLabel').textContent=[temporal?'uₜ':'',!['advection','advection-reaction','reaction'].includes(state.mode)?'− εΔu':'',convective?'+ β·∇u':'',(state.reaction!==0||state.mode.includes('reaction')||state.mode.includes('adr'))?'+ cu':''].filter(Boolean).join(' ').replace(/^\+ /,'')+' = f';
   $('discreteLabel').textContent=temporal?'Mḃ + Ab = f':'Ab = f';$('inspectorEquation').textContent=temporal?'Mḃ + Ab = f':'Ab = f';
   $('originalFieldName').textContent=$('originalLegendName').textContent=temporal?'Consistent baseline':'Original';
-  $('comparisonFieldName').textContent=$('comparisonLegendName').textContent=temporal?'Comparison':'With diffusion';
+  $('comparisonFieldName').textContent=$('comparisonLegendName').textContent=temporal?'Comparison':state.stabilization==='supg'?'With SUPG':state.stabilization==='none'?'Comparison':'With diffusion';
   document.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('selected',b.dataset.preset===state.preset);b.setAttribute('aria-pressed',b.dataset.preset===state.preset);});
 }
 function updateSummary(){
-  const r=result;$('nodeCount').textContent=r.mesh.nodes.length;$('elementCount').textContent=r.mesh.triangles.length;$('dofCount').textContent=r.N;
+  const r=result;$('tauSummary').textContent=`Element τ: ${r.tauRange.map(v=>short(v)).join(' – ')}${Math.hypot(...velocity(state))===0?' · no flow, SUPG is zero':''}`;$('nodeCount').textContent=r.mesh.nodes.length;$('elementCount').textContent=r.mesh.triangles.length;$('dofCount').textContent=r.N;
   $('systemSize').textContent=`${r.N} unknowns`;$('matrixShape').textContent=`${r.N} × ${r.N}`;
   const count=Object.keys(state.matrixEdits).length+Object.keys(state.rhsEdits).length+Object.keys(state.nodeEdits).length;$('editCount').textContent=`${count} override${count===1?'':'s'}`;
   $('timing').textContent=`${r.mesh.triangles.length} elements · ${r.ms.toFixed(0)} ms · ${trajectory?`${r.steps} time steps · reused LU`:'partial-pivot solve'}`;
   document.querySelector('[data-field="reference"]').disabled=!r.reference;
   $('exactLegend').classList.toggle('hidden',!r.reference);
-  $('fieldBadge').textContent={poisson:'POISSON',transport:'CONVECTION–DIFFUSION',heat:'DIFFUSION',advection:'CONVECTION',parabolic:'PARABOLIC'}[state.mode];
-  $('fieldSubtitle').textContent=field==='reference'?'Exact solution sampled at mesh nodes':field==='difference'?'Comparison minus original · shared coordinates':trajectory?`t = ${format(r.time)} · ${field==='stable'&&state.massType==='lumped'?'lumped mass':'consistent mass'} · ${state.scheme==='be'?'backward Euler':'Crank–Nicolson'}${field==='stable'?` · δ = ${short(state.diffusion)}`:' · δ = 0'}`:'Piecewise-linear finite element solution';
+  $('fieldBadge').textContent={poisson:'POISSON',transport:'CONVECTION–DIFFUSION',heat:'DIFFUSION',advection:'CONVECTION',parabolic:'PARABOLIC',reaction:'REACTION','diffusion-reaction':'DIFFUSION–REACTION','advection-reaction':'ADVECTION–REACTION',adr:'ADVECTION–DIFFUSION–REACTION','steady-adr':'STEADY ADR'}[state.mode];
+  $('fieldSubtitle').textContent=field==='reference'?'Exact solution sampled at mesh nodes':field==='difference'?'Comparison minus original · shared coordinates':trajectory?`t = ${format(r.time)} · ${field==='stable'&&state.massType==='lumped'?'lumped mass':'consistent mass'} · ${state.scheme==='be'?'backward Euler':'Crank–Nicolson'}${field==='stable'?` · ${methodLabel()}`:' · δ = 0'}`:'Piecewise-linear finite element solution';
   let note;
   if(count)note=`${count} algebraic or boundary override${count===1?' is':'s are'} active. The original PDE reference no longer applies. Changes to mesh or triangulation clear these edits.`;
+  else if(trajectory&&r.initialMismatch)note=`Initial and boundary data disagree at ${r.initialMismatch} boundary nodes. Prescribed boundary values take precedence; the two runs share the same initial interior field.`;
+  else if(state.stabilization==='supg')note=`SUPG adds residual stabilization along the flow (τ = ${r.tauRange.map(v=>short(v)).join(' – ')}). Compare extrema and L² error: oscillations can remain. Switch to isotropic diffusion to compare spreading across the flow; refine the mesh to resolve the layer.`;
   else if(trajectory){
     if(r.initialMismatch)note=`Initial and boundary data disagree at ${r.initialMismatch} boundary nodes. Prescribed boundary data take precedence. Playback compares the same initial interior field.`;
+    else if(state.reaction!==0)note=`Reaction c = ${state.reaction}: ${state.reaction>0?'decay':'growth'}. Compare the exact profile at the same time. Added diffusion spreads the field; reaction changes its amplitude. Mass lumping changes only the time derivative, while cM remains consistent.`;
     else if(state.mode==='heat')note='Step forward from the narrow initial pulse. Lumped mass with backward Euler preserves nonnegativity here; compare negative nodes and L² error. Positivity and accuracy are different questions.';
     else if(state.mode==='advection')note='Watch the front move with the flow. Lumping alone can still produce oscillations; compare with added diffusion and switch between Crank–Nicolson and backward Euler to see temporal damping.';
     else note='Physical diffusion spreads the pulse as convection carries it. Compare the effect of extra δK and mass lumping against the exact profile at the same time.';
   }
+  else if(state.reaction!==0)note='The spatial operator is A = εK + C + cM. Reaction changes the balance of the steady solution; added δK changes only diffusion.';
   else if(state.preset==='layer'&&state.mode==='transport')note=state.diffusion>0?`Added diffusion δ = ${Number(state.diffusion.toPrecision(5))} brings the coordinate mesh Péclet number from ${short(r.pe)} to ${short(r.effectivePe)}. Compare oscillations and layer spreading in the cross-section.`:`The layer is thin relative to the mesh (Peₕ = ${short(r.pe)}). Try “Apply mesh-based value” to compare the original solution with artificial diffusion.`;
   else if(state.preset==='sharp')note='A layer of width 0.025 near x = 1 challenges the mesh. Refinement improves resolution; added isotropic diffusion changes the amplitude and does not restore the sharp layer.';
   else note=state.diffusion>0?'Artificial diffusion changes the Poisson equation by increasing its diffusivity. Compare with the exact reference: extra smoothness can increase error.':'A smooth starting point. Refine the mesh to see the finite element solution approach the exact solution.';
@@ -106,13 +114,13 @@ function render(){if(!result)return;meshPoints=meshPlot($('meshPreview'),result.
   $('legendMin').textContent=short(p.lo);$('legendMax').textContent=short(p.hi);
   crossPlot($('crossSection'),result,solvedState,slice);matrixPlot($('matrixPreview'),{...result,A:inspectedMatrix()},+$('matrixRow').value||0,+$('matrixCol').value||0);
 }
-function inspectedMatrix(){if(!result)return null;const key=$('matrixPicker').value;return !trajectory||key==='A'?result.A:key==='step'?result.stableTimeMatrix:result[key];}
+function inspectedMatrix(){if(!result)return null;const key=$('matrixPicker').value;return key==='A'?result.A:key==='step'?result.stableTimeMatrix:result[key];}
 function setField(next){field=next;document.querySelectorAll('[data-field]').forEach(b=>{b.classList.toggle('active',b.dataset.field===field);b.setAttribute('aria-pressed',b.dataset.field===field);});if(result){updateSummary();render();}}
 function selectEditor(next){editor=next;document.querySelectorAll('[data-editor]').forEach(b=>{b.classList.toggle('active',b.dataset.editor===editor);b.setAttribute('aria-pressed',b.dataset.editor===editor);});for(const key of ['matrix','rhs','node'])$(`${key}Editor`).classList.toggle('hidden',key!==editor);$('symmetricLabel').classList.toggle('hidden',editor!=='matrix');updateEditor();}
 function validIndex(input,max){const v=Number(input.value);return input.value.trim()!==''&&Number.isInteger(v)&&v>=0&&v<max?v:null;}
 function updateEditor(){if(!result)return;
   const i=validIndex($('matrixRow'),result.N),j=validIndex($('matrixCol'),result.N),k=validIndex($('rhsRow'),result.N),node=validIndex($('nodeId'),result.mesh.nodes.length);
-  const readOnly=!!trajectory&&$('matrixPicker').value!=='A',matrix=inspectedMatrix(),key=trajectory?$('matrixPicker').value:'A';
+  const readOnly=$('matrixPicker').value!=='A',matrix=inspectedMatrix(),key=$('matrixPicker').value;
   $('matrixValue').readOnly=readOnly;$('matrixValueLabel').textContent=key==='A'?'Aᵢⱼ':key==='ML'?'Mᴸᵢⱼ':key==='step'?'Bᵢⱼ':`${key}ᵢⱼ`;
   $('applyEdit').disabled=editor==='matrix'&&readOnly;$('symmetricLabel').classList.toggle('hidden',editor!=='matrix'||readOnly);
   if(i!==null&&j!==null)$('matrixValue').value=Number(matrix[i*result.N+j].toPrecision(10));
@@ -122,20 +130,20 @@ function updateEditor(){if(!result)return;
     $('nodeInfo').textContent=`(${short(x)}, ${short(y)}) · ${boundary?'Dirichlet boundary; value is editable':`interior DOF ${dof}; edit its row in A or f`}`;
     if(editor==='node')$('matrixDetail').textContent=`Node ${node}: u = ${format(result.raw[node])}, uδ = ${format(result.stable[node])}`;
   }
-  if(editor==='matrix')$('matrixDetail').textContent=i===null||j===null?`Enter row and column in 0…${result.N-1}.`:readOnly?`${key==='step'?'Comparison B':key}[${i}, ${j}] = ${matrix[i*result.N+j].toPrecision(6)} · read only`:`A[${i}, ${j}] = ${short(result.A[i*result.N+j])} · δK = ${short(state.diffusion*result.K[i*result.N+j])} · total = ${short(result.effectiveA[i*result.N+j])}`;
+  if(editor==='matrix')$('matrixDetail').textContent=i===null||j===null?`Enter row and column in 0…${result.N-1}.`:readOnly?`${key==='step'?'Comparison B':key}[${i}, ${j}] = ${matrix[i*result.N+j].toPrecision(6)} · read only`:`A[${i}, ${j}] = ${short(result.A[i*result.N+j])} · δK = ${short(addedDiffusion(state)*result.K[i*result.N+j])} · SUPG S = ${short(result.S[i*result.N+j])} · total = ${short(result.effectiveA[i*result.N+j])}`;
   if(editor==='rhs')$('matrixDetail').textContent=k===null?`Enter a DOF in 0…${result.N-1}.`:`f[${k}] = ${short(result.F[k])} · stabilized load = ${short(result.effectiveF[k])} · b[${k}] = ${short(result.rawB[k])}`;
   matrixPlot($('matrixPreview'),{...result,A:matrix},i||0,j||0);
 }
 function clearIndexed(){state.matrixEdits={};state.rhsEdits={};state.nodeEdits={};selected=null;for(const id of ['matrixRow','matrixCol','rhsRow','nodeId'])$(id).value=0;}
-function loadPreset(name){stopPlayback();state=preset(name);selectedTime=0;trajectory=null;$('matrixPicker').value='A';clearIndexed();$('symmetric').checked=['poisson','heat'].includes(state.mode);field='raw';syncControls();setField('raw');schedule();}
+function loadPreset(name){stopPlayback();state=preset(name);selectedTime=0;trajectory=null;$('matrixPicker').value='A';clearIndexed();$('symmetric').checked=!Math.hypot(...velocity(state));field='raw';syncControls();setField('raw');schedule();}
 
 document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>loadPreset(b.dataset.preset)));
 $('reset').addEventListener('click',()=>{loadPreset('poisson');camera={yaw:-.66,elevation:.67};toast('Reset to the smooth Poisson experiment.');});
 $('meshSize').addEventListener('input',()=>{state.n=+$('meshSize').value;clearIndexed();syncControls();schedule();});
 $('pattern').addEventListener('change',()=>{state.pattern=$('pattern').value;clearIndexed();schedule();});
-$('mode').addEventListener('change',()=>loadPreset({poisson:'poisson',transport:'layer',advection:'moving-front',heat:'heat-pulse',parabolic:'moving-pulse'}[$('mode').value]));
-for(const key of ['epsilon','betaX','betaY','source','amplitude'])$(key).addEventListener('input',()=>{
-  const v=key==='source'?$(key).value:$(key).value.trim()===''?NaN:Number($(key).value);state[key]=v;schedule();
+$('mode').addEventListener('change',()=>loadPreset({poisson:'poisson',transport:'layer',advection:'moving-front',heat:'heat-pulse',parabolic:'moving-pulse',reaction:'reaction-decay','diffusion-reaction':'diffusion-reaction','advection-reaction':'advection-reaction',adr:'adr-pulse','steady-adr':'steady-adr'}[$('mode').value]));
+for(const key of ['epsilon','reaction','betaX','betaY','source','amplitude'])$(key).addEventListener('input',()=>{
+  const v=key==='source'?$(key).value:$(key).value.trim()===''?NaN:Number($(key).value);state[key]=v;if(key==='reaction')syncControls();schedule();
 });
 for(const key of ['initial','dt','duration','scheme','massType'])$(key).addEventListener(['scheme','massType'].includes(key)?'change':'input',()=>{
   state[key]=['dt','duration'].includes(key)?$(key).value.trim()===''?NaN:Number($(key).value):$(key).value;
@@ -143,9 +151,12 @@ for(const key of ['initial','dt','duration','scheme','massType'])$(key).addEvent
 });
 $('matrixPicker').addEventListener('change',()=>{selectEditor('matrix');render();});
 for(const side of ['left','right','bottom','top'])$(`bc-${side}`).addEventListener('input',()=>{state.boundaries[side]=$(`bc-${side}`).value;schedule();});
+$('stabilization').addEventListener('change',()=>{state.stabilization=$('stabilization').value;syncControls();setField('stable');schedule();});
+$('supgScale').addEventListener('input',()=>{state.supgScale=$('supgScale').value.trim()===''?NaN:Number($('supgScale').value);schedule();});
 $('diffusion').addEventListener('input',()=>{state.diffusion=$('diffusion').value.trim()===''?NaN:Number($('diffusion').value);if(Number.isFinite(state.diffusion)){$('diffusionSlider').max=Math.max(.15,state.diffusion);$('diffusionSlider').value=state.diffusion;$('diffusionMax').textContent=short(+$('diffusionSlider').max);}schedule();});
 $('diffusionSlider').addEventListener('input',()=>{state.diffusion=+$('diffusionSlider').value;$('diffusion').value=state.diffusion;schedule();});
 $('suggestDiffusion').addEventListener('click',()=>{
+  state.stabilization='isotropic';
   if(Math.hypot(...velocity(state))===0){toast('There is no convection term: the mesh-based value is δ = 0. You can still add diffusion manually.');state.diffusion=0;}
   else{state.diffusion=Math.max(0,Math.hypot(...velocity(state))/(2*state.n)-physicalDiffusion(state));toast(`Applied δ = ${state.diffusion.toPrecision(5)}. Compare the cross-section below.`);}
   syncControls();setField('stable');schedule();
@@ -163,7 +174,7 @@ $('editForm').addEventListener('submit',e=>{
   const valueId=editor==='matrix'?'matrixValue':editor==='rhs'?'rhsValue':'nodeValue',value=Number($(valueId).value);
   if($(valueId).value.trim()===''||!Number.isFinite(value)){toast('Enter a finite number.');return;}
   if(editor==='matrix'){
-    if(trajectory&&$('matrixPicker').value!=='A'){toast('This assembled matrix is read only. Select spatial operator A to edit it.');return;}
+    if($('matrixPicker').value!=='A'){toast('This assembled matrix is read only. Select spatial operator A to edit it.');return;}
     const i=validIndex($('matrixRow'),result.N),j=validIndex($('matrixCol'),result.N);if(i===null||j===null){toast(`Choose indices from 0 to ${result.N-1}.`);return;}
     state.matrixEdits[`${i},${j}`]=value;if($('symmetric').checked)state.matrixEdits[`${j},${i}`]=value;
   }else if(editor==='rhs'){
@@ -196,10 +207,10 @@ $('guide').addEventListener('click',e=>{if(e.target===$('guide')){const r=$('gui
 $('export').addEventListener('click',()=>{
   if(!result||pending)return;const r=result;
   const sparse=matrix=>{const entries=[];for(let i=0;i<r.N;i++)for(let j=0;j<r.N;j++)if(matrix[i*r.N+j]!==0)entries.push([i,j,matrix[i*r.N+j]]);return entries;};
-  const data={format:'elliptic-lab-v2',description:'Zero-based indices. A and f are the reduced edited base system. Time-dependent runs compare consistent-mass baseline with the selected mass and added diffusion. Time-step loads include changing-boundary mass lifting.',state:solvedState,
+  const data={format:'elliptic-lab-v3',description:'Zero-based indices. A and f are the reduced edited base system. Time-dependent runs compare consistent-mass baseline with the selected mass and added diffusion. SUPG uses the physical PDE residual; S and H are its spatial and time corrections. Time-step loads include changing-boundary mass lifting including H. Pe excludes directional SUPG.',state:solvedState,
     nodes:r.mesh.nodes,triangles:r.mesh.triangles,interiorNodeIds:r.mesh.interior,solutions:{original:Array.from(r.raw),stabilized:Array.from(r.stable),exactAtNodes:r.reference?Array.from(r.reference):null},
-    system:{size:r.N,A:sparse(r.A),K:sparse(r.K),M:sparse(r.M),lumpedMassDiagonal:Array.from(r.lumped),f:Array.from(r.F),stabilizedA:sparse(r.effectiveA),stabilizedF:Array.from(r.effectiveF)},metrics:r.metrics};
-  if(trajectory){data.time=r.time;data.trajectory=trajectory.frames.map(f=>({time:f.time,dt:f.dt,original:Array.from(f.raw),comparison:Array.from(f.stable),metrics:f.metrics}));data.system.timeStepMatrix=sparse(r.timeMatrix);data.system.comparisonTimeStepMatrix=sparse(r.stableTimeMatrix);data.system.timeStepRhs=r.rawRhs?Array.from(r.rawRhs):null;data.system.comparisonTimeStepRhs=r.stableRhs?Array.from(r.stableRhs):null;}
+    system:{size:r.N,A:sparse(r.A),K:sparse(r.K),M:sparse(r.M),supgSpatial:sparse(r.S),supgTime:sparse(r.H),tauRange:r.tauRange,lumpedMassDiagonal:Array.from(r.lumped),f:Array.from(r.F),stabilizedA:sparse(r.effectiveA),stabilizedF:Array.from(r.effectiveF)},metrics:r.metrics};
+  if(trajectory){data.system.comparisonMass=sparse(r.comparisonMass);data.time=r.time;data.trajectory=trajectory.frames.map(f=>({time:f.time,dt:f.dt,original:Array.from(f.raw),comparison:Array.from(f.stable),metrics:f.metrics}));data.system.timeStepMatrix=sparse(r.timeMatrix);data.system.comparisonTimeStepMatrix=sparse(r.stableTimeMatrix);data.system.timeStepRhs=r.rawRhs?Array.from(r.rawRhs):null;data.system.comparisonTimeStepRhs=r.stableRhs?Array.from(r.stableRhs):null;}
   const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`elliptic-lab-${state.preset}-n${state.n}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Exported experiment, mesh, matrices, and solutions as JSON.');
 });
 new ResizeObserver(()=>requestAnimationFrame(render)).observe(document.querySelector('main'));

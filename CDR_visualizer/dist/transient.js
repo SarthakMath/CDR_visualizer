@@ -1,4 +1,4 @@
-import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,isTransient} from './fem.js';
+import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,isTransient,addedDiffusion,supgLoad} from './fem.js';
 
 export function matrixRows(matrix,n){return Array.from({length:n},(_,i)=>{const row=[];for(let j=0;j<n;j++)if(matrix[i*n+j]!==0)row.push([j,matrix[i*n+j]]);return row;});}
 export function multiplyRows(rows,b){return Float64Array.from(rows,row=>row.reduce((sum,[j,v])=>sum+v*b[j],0));}
@@ -26,11 +26,13 @@ export function solveFactored(factor,rhs){
   return b;
 }
 
-function reducedForcing(system,state,load,g){
+function reducedForcing(system,state,load,g,supgF){
   const F=load.slice(),lift=new Float64Array(system.N);
   for(const[row,id,a,k]of system.boundaryTerms){F[row]-=a*g[id];lift[row]-=k*g[id];}
   for(const[i,v]of Object.entries(state.rhsEdits))F[+i]=v;
-  return{F,effectiveF:F.map((v,i)=>v+state.diffusion*lift[i])};
+  const effectiveF=F.map((v,i)=>v+addedDiffusion(state)*lift[i]+supgF[i]);
+  for(const[row,id,,,,s]of system.boundaryTerms)effectiveF[row]-=s*g[id];
+  return{F,effectiveF};
 }
 export function computeTrajectory(state,progress=()=>{}){
   const started=performance.now();
@@ -41,8 +43,8 @@ export function computeTrajectory(state,progress=()=>{}){
   if(steps>240)throw Error('This interactive run supports at most 240 steps. Increase Δt or reduce the end time.');
   const system=assemble(state),{N,A,K,M,lumped,mesh}=system,theta=state.scheme==='be'?1:.5;
   const ML=new Float64Array(N*N);for(let i=0;i<N;i++)ML[i*N+i]=lumped[i];
-  const comparisonMass=state.massType==='lumped'?ML:M,effectiveA=A.map((v,k)=>v+state.diffusion*K[k]);
-  const identical=state.diffusion===0&&state.massType==='consistent',factorCache=new Map();
+  const comparisonMass=(state.massType==='lumped'?ML:M).map((v,k)=>v+system.H[k]),effectiveA=A.map((v,k)=>v+addedDiffusion(state)*K[k]+system.S[k]);
+  const identical=addedDiffusion(state)===0&&state.massType==='consistent'&&state.stabilization!=='supg',factorCache=new Map();
   function stepSystems(dt){
     const key=dt.toPrecision(12);if(factorCache.has(key))return factorCache.get(key);
     const make=(mass,operator)=>{
@@ -53,10 +55,10 @@ export function computeTrajectory(state,progress=()=>{}){
   }
   let g=boundaryEvaluator(state,mesh)(0);const evaluateBoundary=boundaryEvaluator(state,mesh),source=expression(state.source),initial=expression(state.initial),eps=physicalDiffusion(state),beta=velocity(state);
   let rawB=new Float64Array(N),stableB;
-  for(let i=0;i<N;i++){const[x,y]=mesh.nodes[mesh.interior[i]];rawB[i]=initial(x,y,eps,0,...beta);}stableB=rawB.slice();
-  let initialMismatch=0;for(const id of mesh.boundary){const[x,y]=mesh.nodes[id];if(Math.abs(initial(x,y,eps,0,...beta)-g[id])>1e-8)initialMismatch++;}
+  for(let i=0;i<N;i++){const[x,y]=mesh.nodes[mesh.interior[i]];rawB[i]=initial(x,y,eps,0,...beta,state.reaction??0);}stableB=rawB.slice();
+  let initialMismatch=0;for(const id of mesh.boundary){const[x,y]=mesh.nodes[id];if(Math.abs(initial(x,y,eps,0,...beta,state.reaction??0)-g[id])>1e-8)initialMismatch++;}
   const sourceVaries=/\bt\b/.test(state.source),exact=exactSolution(state);
-  let forces=reducedForcing(system,state,system.load,g),lastPair=null;
+  let forces=reducedForcing(system,state,system.load,g,system.supgF),lastPair=null;
   const frames=[];let lo=0,hi=0,differenceMax=0;
   function snapshot(time,dt,rawRhs=null,stableRhs=null,pair=null){
     const raw=g.slice(),stable=g.slice();mesh.interior.forEach((id,i)=>{raw[id]=rawB[i];stable[id]=stableB[i];});
@@ -70,22 +72,22 @@ export function computeTrajectory(state,progress=()=>{}){
   snapshot(0,Math.min(state.dt,state.duration));
   for(let step=1;step<=steps;step++){
     const t=Math.min(state.duration,step*state.dt),prevT=frames[step-1].time,dt=t-prevT,pair=stepSystems(dt);
-    const nextG=evaluateBoundary(t),load=sourceVaries?sourceLoad(mesh,source,state,t):system.load,nextForces=reducedForcing(system,state,load,nextG);
+    const nextG=evaluateBoundary(t),load=sourceVaries?sourceLoad(mesh,source,state,t):system.load,nextForces=reducedForcing(system,state,load,nextG,sourceVaries?supgLoad(mesh,source,state,t,system.supgElements):system.supgF);
     const rawRhs=multiplyRows(pair.raw.rightRows,rawB),stableRhs=identical?rawRhs: multiplyRows(pair.stable.rightRows,stableB);
     for(let i=0;i<N;i++){
       rawRhs[i]+=dt*(theta*nextForces.F[i]+(1-theta)*forces.F[i]);
       if(!identical)stableRhs[i]+=dt*(theta*nextForces.effectiveF[i]+(1-theta)*forces.effectiveF[i]);
     }
     // Consistent mass has an interior-boundary block; full row-sum lumping does not.
-    for(const[row,id,,,m]of system.boundaryTerms){const correction=m*(nextG[id]-g[id]);rawRhs[row]-=correction;if(!identical&&state.massType==='consistent')stableRhs[row]-=correction;}
+    for(const[row,id,,,m,,h]of system.boundaryTerms){const change=nextG[id]-g[id];rawRhs[row]-=m*change;if(!identical)stableRhs[row]-=((state.massType==='consistent'?m:0)+h)*change;}
     rawB=solveFactored(pair.raw.factor,rawRhs);stableB=identical?rawB:solveFactored(pair.stable.factor,stableRhs);
     g=nextG;forces=nextForces;lastPair=pair;snapshot(t,dt,rawRhs,stableRhs,pair);
     if(step%20===0||step===steps)progress(step,steps);
   }
   const firstPair=stepSystems(Math.min(state.dt,state.duration)),speed=Math.hypot(...beta);
-  return{...system,ML,effectiveA,frames,steps,theta,initialMismatch,displayRange:[lo,hi],differenceMax,
+  return{...system,ML,comparisonMass,effectiveA,frames,steps,theta,initialMismatch,displayRange:[lo,hi],differenceMax,
     timeMatrix:firstPair.raw.B,stableTimeMatrix:firstPair.stable.B,lastTimeMatrix:lastPair.raw.B,lastStableTimeMatrix:lastPair.stable.B,
     pe:eps>0?speed/(2*state.n*eps):speed>0?Infinity:0,
-    effectivePe:eps+state.diffusion>0?speed/(2*state.n*(eps+state.diffusion)):speed>0?Infinity:0,
+    effectivePe:eps+addedDiffusion(state)>0?speed/(2*state.n*(eps+addedDiffusion(state))):speed>0?Infinity:0,
     courant:speed*state.dt*state.n,diffusionNumber:eps*state.dt*state.n**2,ms:performance.now()-started};
 }

@@ -24,12 +24,12 @@ node --test tests/*.test.mjs
 
 ## Time-dependent experiments: moving layers and mass lumping
 
-The equation list now has five modes: steady Poisson, steady convection–diffusion, transient convection, transient diffusion, and transient convection–diffusion. Selecting an equation loads its matching starter experiment. The three **Watch in time** buttons load the transient examples directly.
+The equation list includes steady Poisson, steady convection–diffusion, steady advection–diffusion–reaction (ADR), and transient convection, diffusion, convection–diffusion, pure reaction, diffusion–reaction, advection–reaction, and full ADR. Selecting an equation loads its matching starter experiment. The three **Watch in time** buttons load the transient examples directly.
 
 Each time-dependent experiment solves
 
 ```text
-uₜ − εΔu + β·∇u = f,        u(x,y,0) = u₀(x,y),
+uₜ − εΔu + β·∇u + cu = f,        u(x,y,0) = u₀(x,y),
 MII ḃ + AII b = FI − AIB g − MIB ġ.
 ```
 
@@ -78,7 +78,7 @@ Its trace is imposed on the square's boundary, so it is also the exact reference
 - **Play/Pause**, single-step buttons, rewind, and the slider operate on the computed trajectory. Playback speed is measured in frames per second; it does not alter the numerical Δt.
 - Changing a parameter pauses playback and recomputes from the initial field. The displayed physical time is preserved as closely as the new time grid permits. Loading a preset returns to t = 0.
 - Both surface/field plots and cross-sections share scales locked over the full current trajectory. This prevents shrinking peaks from appearing unchanged through automatic time-by-time rescaling.
-- Source and edge expressions accept `t`, `vx`, and `vy` as well as `x`, `y`, `eps`, and `pi`. `eps` is the physical diffusion (zero in pure convection), and `vx`, `vy` are the active convection velocity (both zero in pure diffusion).
+- Source and edge expressions accept `t`, `vx`, and `vy` as well as `x`, `y`, `eps`, `c`, and `pi`. `eps` is the physical diffusion (zero in pure convection), and `vx`, `vy` are the active convection velocity (both zero in pure diffusion).
 - Initial data are interpolated at nodes. At boundary nodes, prescribed Dirichlet data take precedence over u₀; a warning reports disagreements at t = 0.
 - The integral ∫uₕ, negative-node count (threshold −10⁻¹⁰), Courant number |β|Δt/h, and physical diffusion number εΔt/h² are shown for time-dependent runs. The integral can change through sources and prescribed boundaries; it is not labeled a conserved quantity. At t = 0 no step has been solved, so backward error is left blank.
 - At most 240 steps are computed. A final shorter step lands exactly at T. The final matrix inspector uses that shorter step where appropriate. Reference and difference views do not report a solve residual.
@@ -179,7 +179,7 @@ Indices are zero based. Nodes are ordered left to right, bottom to top: node(i,j
 
 ## Discretization and stabilization
 
-For steady modes, the supported PDE is −εΔu + β·∇u = f with prescribed Dirichlet data. Poisson mode sets β = 0. The time-dependent extension adds uₜ as described above. For local nodal basis functions φᵢ on a triangle T:
+For steady modes, the supported PDE is −εΔu + β·∇u + cu = f with prescribed Dirichlet data. Poisson mode sets β = 0. The time-dependent extension adds uₜ as described above. For local nodal basis functions φᵢ on a triangle T:
 
 ```text
 Kᵀᵢⱼ = |T| ∇φᵢ · ∇φⱼ
@@ -190,8 +190,8 @@ Fᵀᵢ  = ∫T f φᵢ
 Source integrals use a seven-point, degree-five triangle quadrature rule. Diffusion and constant-velocity convection matrices are integrated exactly. If I denotes interior nodes and B boundary nodes, the reduced system is
 
 ```text
-A = (εK + C)II
-f = FI − (εK + C)IB g
+A = (εK + C + cM)II
+f = FI − (εK + C + cM)IB g
 Ab = f.
 ```
 
@@ -218,3 +218,101 @@ The L² value is a seven-point quadrature estimate of the continuous piecewise-l
 - `tests/transient.test.mjs`: 10 checks covering exact local masses, reused pivoted LU, changing-boundary affine patches, Crank–Nicolson with quadratic time data, constant-state preservation, heat-pulse positivity, isolated mass comparison, zero-diffusion transport, exact Gaussian data, time grids, and resource limits.
 
 The tests validate these finite cases at floating-point tolerances; they are not a proof of stability for arbitrary input. A useful background example is the [FEniCS convection–diffusion tutorial](https://www.karlin.mff.cuni.cz/~hron/fenics-tutorial/convection_diffusion/doc.html). For the distinction between suppressing oscillations and smearing layers, see the [classical artificial-diffusion discussion in this research article](https://link.springer.com/article/10.1007/s00419-026-03047-y).
+
+## Reaction experiments: decay, growth, and transport
+
+The constant reaction coefficient **c** is available in every mode, including steady problems. The sign convention is **+cu on the left**: with no forcing or transport, uₜ + cu = 0 gives u = exp(−ct)u₀. This is linear reaction; nonlinear kinetics and coupled chemical species are not implemented.
+
+Five buttons in **Add reaction** provide starting points:
+
+| Preset | Physical equation |
+| --- | --- |
+| Pure decay | uₜ + cu = 0 |
+| Spreading + decay | uₜ − εΔu + cu = 0 |
+| Moving + decay | uₜ + β·∇u + cu = 0 |
+| Moving + spreading + decay | uₜ − εΔu + β·∇u + cu = 0 |
+| Steady ADR | −εΔu + β·∇u + cu = f |
+
+1. Choose **Pure decay**, with c = 2, consistent comparison mass, δ = 0, Crank–Nicolson. Play to T = 0.8. The exact amplitude falls by exp(−1.6) ≈ 0.202 without moving or spreading. The fixed color scale makes decay visible. Set c = 0 to preserve the initial field, or c = −1 to see growth by exp(0.8) ≈ 2.226.
+2. Choose **Moving + spreading + decay**. The defaults are n = 24, ε = 0.002, β = (0.5, 0.1), c = 2, Δt = 0.005, T = 0.8. Compare c = 0, 2, and −1 at the same time. Motion, spreading, and reaction amplitude changes have separate causes. Add δK to see extra spreading, then switch comparison mass to isolate the effect of lumping.
+3. To examine a reacting layer, choose **Moving front**, set c = 2, and multiply every boundary expression by `exp(-c*t)`. This adds decay to the original steep front. Its old exact reference is hidden after changing c. Compare δ = 0 with the mesh-based δ; reduced amplitude is not evidence that oscillations are resolved.
+4. To isolate stiff reaction, choose **Pure decay**, set all four boundary expressions to `0`, c = 100, Δt = 0.04, T = 0.4, and keep both masses consistent and δ = 0. Here cΔt = 4. Crank–Nicolson's amplification (1−cΔt/2)/(1+cΔt/2) = −1/3 produces alternating signs. Backward Euler's factor 1/(1+cΔt) = 1/5 stays positive, though the exact factor is exp(−4). Reduce Δt for accuracy. Adding diffusion cannot repair an unresolved reaction time scale. Edited boundaries hide the preset reference.
+
+For the Gaussian presets, the exact reference is
+
+```text
+u(x,y,t) = exp(−ct) s²/(s² + 4εt)
+           × exp(−((x−0.25−βx t)²+(y−0.4−βy t)²)/(s²+4εt)),
+s² = 0.0049.
+```
+
+Inactive diffusion/velocity terms are zero. Compatible exact traces are prescribed on all four edges. Expressions for source, initial data, and boundaries accept `c`; changes to coefficients update these traces and references. Other presets lose their reference when reaction invalidates it. The steady ADR preset uses u = sin(πx)sin(πy) and the corresponding coefficient-dependent manufactured source.
+
+The reaction element matrix is **Rᵀ = cMᵀ**, assembled exactly including its Dirichlet boundary contribution. **A includes reaction before manual edits and before δK**. Comparison mass lumping changes only the time derivative, not R: both runs retain consistent cM. Therefore the diffusion-only positivity demonstration must not be generalized to stiff reaction. Negative c models physical growth and may also make a steady operator singular or indefinite.
+
+`tests/reaction.test.mjs` checks reaction assembly and boundary lifting, steady/transient manufactured patches, exact BE/CN amplification for decay and growth, PDE residuals of all four transient analytic profiles, invalid inputs/reference suppression, and steady refinement.
+
+## Layers and SUPG: three reproducible comparisons
+
+Use the **Layers / SUPG** buttons. The orange solution is always unstabilized Galerkin with consistent time mass. The teal **Comparison** uses the selected method: none, isotropic δK, or SUPG. These methods are mutually exclusive; an old δ value is ignored in SUPG/none mode. Keep comparison mass consistent to isolate stabilization. Switching methods rebuilds the run and preserves the selected time.
+
+### Steady outflow layer
+
+1. Select **Steady outflow layer**: n = 16, ε = 0.005, β = (1,0), c = 0, f = 1, SUPG strength = 1. Its exact q(x) is the same outflow-layer profile documented above; width is O(ε), much smaller than h = 1/16.
+2. Compare the cross-section at y = 0.5. The baseline maximum is about 1.846; SUPG lowers it to about 0.9375. The quadrature L² error falls from 0.1648 to 0.1186. The layer is still unresolved: a low residual or a smooth curve does not recover its sub-element shape.
+3. Switch **Comparison method** to **Isotropic artificial diffusion**, then apply the mesh-based value. In this essentially one-dimensional example the results are similar. This example demonstrates oscillation control, not SUPG's crosswind advantage.
+4. Switch back to SUPG, try strengths 0, 0.5, 1, and 2, then n = 32. Strength 0 recovers the unmodified comparison. τ is recalculated for the current mesh, velocity, diffusion and reaction.
+
+### Moving interior layer
+
+1. Select **Moving interior layer**: n = 24, ε = 0, β = (0.55,0), c = 0, Δt = 0.005, T = 0.8, Crank–Nicolson. It uses the steep-sided pulse from Moving front, with exact translating edge traces; the comparison uses consistent M plus full transient SUPG.
+2. Play to t = 0.8. The baseline min/max are about −0.2322 / 1.1771; SUPG gives −0.0665 / 1.0440. L² error falls from about 0.05657 to 0.04803. SUPG helps but does **not** remove all overshoot or undershoot. The count of negative nodes can rise even as undershoot magnitude falls, so compare extrema and error as well as counts.
+3. Switch to isotropic diffusion and apply the mesh-based δ ≈ 0.0114583. Use **2D field** to compare spreading perpendicular to the flow as well as the horizontal cross-section. Isotropic δK spreads across y; SUPG's leading artificial diffusion acts only along β. Neither method restores detail already lost by interpolating a thin front on a coarse mesh.
+4. Return to SUPG and change c to 1: the exact front also decays by exp(−t). Try backward Euler separately to see additional temporal damping. With lumped mass selected, the comparison uses Mᴸ + H, not a diagonal time operator; the SUPG H term remains consistent.
+
+### Developing boundary layer
+
+1. Select **Developing boundary layer**: n = 16, ε = 0.005, β = (1,0), c = 0.5, Δt = 0.01, T = 1, Crank–Nicolson, consistent mass and SUPG.
+2. The exact solution is u(x,y,t) = (1−exp(−t))q(x). The source is exp(−t)q(x) + (1−exp(−t))(1+cq(x)); bottom/top traces match u and left/right values are zero. This manufactured example develops an outflow layer from zero and tests changing-boundary and forcing terms. It is not an unforced physical startup.
+3. Scrub from t = 0 to 1. At t = 1, baseline maximum ≈ 1.148 and SUPG maximum ≈ 0.5926; L² error is approximately 0.1008 versus 0.0750. Refine the mesh and compare the exact curve. Changing β invalidates this particular manufactured reference; changing ε or c updates its compatible source/traces.
+
+### What the implementation adds
+
+For constant physical coefficients, SUPG adds the element residual tested along the flow:
+
+```text
+ΣT τT ∫T (β·∇v) [uₜ − εΔu + β·∇u + cu − f].
+```
+
+P1 functions are affine on each triangle, so Δuₕ = 0 inside each element. Writing di = β·∇φi, the assembled additions are
+
+```text
+Hᵀij = τT |T| di / 3
+Sᵀij = τT |T| di dj + c Hᵀij
+Qᵀi(t) = τT di ∫T f(t).
+```
+
+The steady comparison is (A+S)b = F+Q−SIBg. The transient comparison is
+
+```text
+(M*II + HII) ḃ + (AII + SII)b
+    = FI + QI − (AIB + SIB)g − (M*IB + HIB)ġ,
+```
+
+where M* is consistent or full-row-sum lumped mass. The same θ step is applied to every term. Even with lumped M*, HIB contributes to changing-boundary lifting. Source corrections use the same degree-five quadrature as Galerkin. Reaction uses consistent cM; SUPG also includes its cH residual contribution. Matrix inspectors expose S, H, and the actual comparison time mass; JSON v3 exports them.
+
+The default coefficient is a documented heuristic based on the classical 1D coth choice:
+
+```text
+hT = 2|β| / Σi |β·∇φi|,    PeT = |β|hT/(2ε),
+τadv = hT/(2|β|) [coth(PeT) − 1/PeT],
+τT = strength × τadv / sqrt(1 + (c τadv)²).
+```
+
+The last factor is this app's reaction time-scale cap, not a universal optimum. The small-Pe limit is evaluated with a series; ε = 0 uses the large-Pe limit; β = 0 gives no SUPG. τ is semidiscrete and independent of Δt; reducing time-step error is a separate task. The displayed scalar mesh Péclet number includes physical/isotropic diffusivity only, not directional SUPG; its τ range is shown separately.
+
+See the [pyoomph SUPG derivation](https://pyoomph.readthedocs.io/en/latest/tutorial/pde/convdiffu/supg.html) for the streamline test function, transient residual, and coth parameter. Our triangle length and reaction cap are explicitly specified above. The [ASPECT SUPG description](https://aspect-documentation.readthedocs.io/en/stable/user/methods/advection-stabilization/supg.html) also explains residual testing along the flow.
+
+SUPG is not shock capturing, flux correction, or a discrete maximum-principle guarantee. It adds no crosswind diffusion; layers perpendicular to its stabilizing direction can remain troublesome. It vanishes when β = 0, so it cannot fix a pure reaction–diffusion layer. Resolve such layers with mesh refinement. Matrix/load overrides retain the physical PDE's S, H, and Q; after arbitrary algebraic edits the combination is no longer residual-consistent with the edited equation.
+
+`tests/supg.test.mjs` checks zero-flow/zero-strength limits, τ limits, steady and time-dependent affine ADR patches across all mesh patterns and both mass/time choices, changing-boundary H lifting, absence of crosswind stiffness, and the measured layer comparisons above.
