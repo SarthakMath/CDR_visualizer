@@ -1,5 +1,8 @@
+import {isSparse} from './matrix.js';
+import {factorSparse,solveSparse} from './sparse-solver.js';
 // Factor once per distinct step size, reuse throughout the time evolution.
 export function factorDense(matrix,n){
+  if(isSparse(matrix))return factorSparse(matrix);
   const a=matrix.slice(),pivots=new Int32Array(n);let norm=0;
   for(const v of a)norm=Math.max(norm,Math.abs(v));
   const threshold=norm*Number.EPSILON*n*8;
@@ -14,6 +17,7 @@ export function factorDense(matrix,n){
   return{lower,upper,diagonal,pivots};
 }
 export function solveFactored(factor,rhs){
+  if(factor.kind==='sparse-factor')return solveSparse(factor,rhs);
   const{lower,upper,diagonal,pivots}=factor,b=rhs.slice(),n=b.length;
   for(let k=0;k<n;k++){const p=pivots[k],v=b[k];b[k]=b[p];b[p]=v;}
   for(let i=0;i<n;i++)for(const[j,v]of lower[i])b[i]-=v*b[j];

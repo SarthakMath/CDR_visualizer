@@ -1,7 +1,8 @@
+import {matrix,set,combine,rows as storedRows} from './matrix.js';
 import {isAfc,afcTimeStepper,afcReducedLoad} from './afc.js';
-import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,isTransient,addedDiffusion,supgLoad} from './fem.js';
+import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,velocityAt,isTransient,addedDiffusion,supgLoad} from './fem.js';
 
-export function matrixRows(matrix,n){return Array.from({length:n},(_,i)=>{const row=[];for(let j=0;j<n;j++)if(matrix[i*n+j]!==0)row.push([j,matrix[i*n+j]]);return row;});}
+export const matrixRows=storedRows;
 export function multiplyRows(rows,b){return Float64Array.from(rows,row=>row.reduce((sum,[j,v])=>sum+v*b[j],0));}
 
 import {factorDense,solveFactored} from './linear.js';
@@ -23,25 +24,26 @@ export function computeTrajectory(state,progress=()=>{}){
   const steps=Math.max(1,Math.ceil(state.duration/state.dt-1e-12));
   if(steps>240)throw Error('This interactive run supports at most 240 steps. Increase Δt or reduce the end time.');
   const system=assemble(state),{N,A,K,M,lumped,mesh}=system,theta=state.scheme==='be'?1:.5;
-  const ML=new Float64Array(N*N);for(let i=0;i<N;i++)ML[i*N+i]=lumped[i];
+  const ML=matrix(N);for(let i=0;i<N;i++)set(ML,i,i,lumped[i]);
   const afcStepper=isAfc(state)?afcTimeStepper(state,system):null;let afcStats=null;
-  const comparisonMass=(afcStepper||state.massType==='lumped'?ML:M).map((v,k)=>v+system.H[k]),effectiveA=afcStepper?afcStepper.graph.lowOperator:A.map((v,k)=>v+addedDiffusion(state)*K[k]+system.S[k]);
+  const comparisonMass=combine([afcStepper||state.massType==='lumped'?ML:M,1],[system.H,1]),effectiveA=afcStepper?afcStepper.graph.lowOperator:combine([A,1],[K,addedDiffusion(state)],[system.S,1]);
   const identical=addedDiffusion(state)===0&&state.massType==='consistent'&&state.stabilization!=='supg'&&!afcStepper,factorCache=new Map();
   function stepSystems(dt){
     const key=dt.toPrecision(12);if(factorCache.has(key))return factorCache.get(key);
     const make=(mass,operator)=>{
-      const B=mass.map((v,k)=>v+theta*dt*operator[k]),R=mass.map((v,k)=>v-(1-theta)*dt*operator[k]);
+      const B=combine([mass,1],[operator,theta*dt]),R=combine([mass,1],[operator,-(1-theta)*dt]);
       return{B,rows:matrixRows(B,N),rightRows:matrixRows(R,N),factor:factorDense(B,N)};
     };
     const raw=make(M,A),stable=identical||afcStepper?raw:make(comparisonMass,effectiveA),pair={raw,stable};factorCache.set(key,pair);return pair;
   }
   let g=boundaryEvaluator(state,mesh)(0);const evaluateBoundary=boundaryEvaluator(state,mesh),source=expression(state.source),initial=expression(state.initial),eps=physicalDiffusion(state),beta=velocity(state);
   let rawB=new Float64Array(N),stableB;
-  for(let i=0;i<N;i++){const[x,y]=mesh.nodes[mesh.interior[i]];rawB[i]=initial(x,y,eps,0,...beta,state.reaction??0);}stableB=rawB.slice();
-  let initialMismatch=0;for(const id of mesh.boundary){const[x,y]=mesh.nodes[id];if(Math.abs(initial(x,y,eps,0,...beta,state.reaction??0)-g[id])>1e-8)initialMismatch++;}
+  for(let i=0;i<N;i++){const[x,y]=mesh.nodes[mesh.interior[i]];rawB[i]=initial(x,y,eps,0,...velocityAt(state,x,y),state.reaction??0);}stableB=rawB.slice();
+  let initialMismatch=0;for(const id of mesh.boundary){const[x,y]=mesh.nodes[id];if(Math.abs(initial(x,y,eps,0,...velocityAt(state,x,y),state.reaction??0)-g[id])>1e-8)initialMismatch++;}
   const sourceVaries=/\bt\b/.test(state.source),exact=exactSolution(state);
   let forces=reducedForcing(system,state,system.load,g,system.supgF),lastPair=null;
   if(afcStepper)forces.effectiveF=afcReducedLoad(afcStepper.graph,system.load,g);
+  const saveStride=state.n>64?Math.ceil(steps/80):state.n>32?Math.ceil(steps/120):1;
   const frames=[];let lo=0,hi=0,differenceMax=0;
   function snapshot(time,dt,rawRhs=null,stableRhs=null,pair=null){
     const raw=g.slice(),stable=g.slice();mesh.interior.forEach((id,i)=>{raw[id]=rawB[i];stable[id]=stableB[i];});
@@ -55,7 +57,7 @@ export function computeTrajectory(state,progress=()=>{}){
   }
   snapshot(0,Math.min(state.dt,state.duration));
   for(let step=1;step<=steps;step++){
-    const t=Math.min(state.duration,step*state.dt),prevT=frames[step-1].time,dt=t-prevT,pair=stepSystems(dt);
+    const t=Math.min(state.duration,step*state.dt),prevT=(step-1)*state.dt,dt=t-prevT,pair=stepSystems(dt);
     const nextG=evaluateBoundary(t),load=sourceVaries?sourceLoad(mesh,source,state,t):system.load,nextForces=reducedForcing(system,state,load,nextG,sourceVaries?supgLoad(mesh,source,state,t,system.supgElements):system.supgF);
     const rawRhs=multiplyRows(pair.raw.rightRows,rawB),stableRhs=identical?rawRhs: multiplyRows(pair.stable.rightRows,stableB);
     for(let i=0;i<N;i++){
@@ -66,11 +68,11 @@ export function computeTrajectory(state,progress=()=>{}){
     for(const[row,id,,,m,,h]of system.boundaryTerms){const change=nextG[id]-g[id];rawRhs[row]-=m*change;if(!identical&&!afcStepper)stableRhs[row]-=((state.massType==='consistent'?m:0)+h)*change;}
     rawB=solveFactored(pair.raw.factor,rawRhs);
     if(afcStepper){const advanced=afcStepper.advance(stableB,g,prevT,dt);stableB=advanced.b;afcStats=advanced.stats;nextForces.effectiveF=afcReducedLoad(afcStepper.graph,load,nextG);}else stableB=identical?rawB:solveFactored(pair.stable.factor,stableRhs);
-    g=nextG;forces=nextForces;lastPair=pair;snapshot(t,dt,rawRhs,afcStepper?null:stableRhs,pair);
+    g=nextG;forces=nextForces;lastPair=pair;if(step%saveStride===0||step===steps)snapshot(t,dt,rawRhs,afcStepper?null:stableRhs,pair);
     if(step%20===0||step===steps)progress(step,steps);
   }
   const firstPair=stepSystems(Math.min(state.dt,state.duration)),speed=Math.hypot(...beta);
-  return{...system,afc:afcStats,afcD:afcStepper?.graph.D,ML,comparisonMass,effectiveA,frames,steps,theta,initialMismatch,displayRange:[lo,hi],differenceMax,
+  return{...system,afc:afcStats,afcD:afcStepper?.graph.D,ML,comparisonMass,effectiveA,frames,steps:frames.length-1,computedSteps:steps,saveStride,theta,initialMismatch,displayRange:[lo,hi],differenceMax,
     timeMatrix:firstPair.raw.B,stableTimeMatrix:afcStepper?null:firstPair.stable.B,lastTimeMatrix:lastPair.raw.B,lastStableTimeMatrix:afcStepper?null:lastPair.stable.B,
     pe:eps>0?speed/(2*state.n*eps):speed>0?Infinity:0,
     effectivePe:eps+addedDiffusion(state)>0?speed/(2*state.n*(eps+addedDiffusion(state))):speed>0?Infinity:0,

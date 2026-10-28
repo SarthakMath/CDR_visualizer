@@ -9,7 +9,7 @@ cd CDR_visualizer
 python3 -m http.server 4173 --bind 127.0.0.1 --directory dist
 ```
 
-Open http://127.0.0.1:4173 in a browser. Start with **Transport layer**, then **Apply mesh-based value** to explore the artificial-diffusion experiment.
+Open http://127.0.0.1:4173 in a browser. The app starts with the convection-dominated AFC layer. Choose **Steady/Transient → C/D/R terms → Example** in the Problem section. For affine preservation use **Steady → CD → Affine preservation · μ**; for layers use **Outflow layer · BJK AFC** or the isotropic/SUPG variants. Mesh, coefficients, data, and stabilization follow below.
 
 Time-dependent convection, diffusion, and convection–diffusion are also included. Try **Moving front** for transport, **Diffusing pulse** for consistent/lumped mass, and **Moving + diffusing** for a moving Gaussian. Use Play, single-step, or the time slider. The detailed README explains their limits and comparison conventions.
 

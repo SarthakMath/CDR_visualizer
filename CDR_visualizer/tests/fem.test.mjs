@@ -56,7 +56,7 @@ test('individual boundary values override edge data and conflicting corners are 
 test('pivoting handles a zero leading pivot; singular and invalid inputs fail explicitly',()=>{
   const x=solveDense(new Float64Array([0,2,1,3]),new Float64Array([4,7]));near(x[0],1);near(x[1],2);
   assert.throws(()=>solveDense(new Float64Array([1,2,2,4]),new Float64Array([1,2])),/singular/);
-  for(const n of [1,33,2.5,NaN])assert.throws(()=>makeMesh(n));
+  for(const n of [1,129,2.5,NaN])assert.throws(()=>makeMesh(n));
   const s=preset();s.epsilon=0;assert.throws(()=>compute(s));s.epsilon=1;s.diffusion=-1;assert.throws(()=>compute(s));
 });
 test('reference responds to physical diffusion and disappears for changed PDE data',()=>{

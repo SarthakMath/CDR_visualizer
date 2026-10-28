@@ -1,10 +1,25 @@
+import {matrix,get,set,add,combine,isSparse,rows as matrixRows} from './matrix.js';
+import {factorDense,solveFactored} from './linear.js';
 import {isAfc,solveAfcSteady} from './afc.js';
 // Linear (P1) triangular Galerkin finite elements. No numerical dependencies.
 export const layerTrace = 'x-(exp((x-1)/eps)-exp(-1/eps))/(1-exp(-1/eps))';
 export const sharpQ = '(x-(exp((x-1)/0.025)-exp(-40))/(1-exp(-40)))';
 export const isTransient = state => ['heat','advection','parabolic','reaction','diffusion-reaction','advection-reaction','adr'].includes(state.mode);
-export const velocity = state => ['transport','advection','parabolic','advection-reaction','adr','steady-adr'].includes(state.mode)?[state.betaX,state.betaY]:[0,0];
-export const physicalDiffusion = state => ['advection','advection-reaction','reaction'].includes(state.mode)?0:state.epsilon;
+export const velocity = state => state.flow==='rotation'?[.5,.5]:['transport','advection','parabolic','advection-reaction','adr','steady-adr','steady-convection','steady-convection-reaction'].includes(state.mode)?[state.betaX,state.betaY]:[0,0];
+// Rotation is affine in space; velocity() remains a representative maximum-speed vector for diagnostics.
+export function velocityAt(state,x,y){return state.flow==='rotation'?[.5-y,x-.5]:velocity(state);}
+export function rotationProfile(x,y){
+  const cylinder=Math.hypot(x-.5,y-.75)/.15;
+  if(cylinder<=1&&(Math.abs(x-.5)>=.025||y>=.85))return 1;
+  const cone=Math.hypot(x-.5,y-.25)/.15;if(cone<=1)return 1-cone;
+  const hump=Math.hypot(x-.25,y-.5)/.15;if(hump<=1)return (1+Math.cos(Math.PI*hump))/4;
+  return 0;
+}
+// Exact integral of phi_i beta·grad(phi_j) for constant or affine beta.
+export function convectionEntry(state,ps,area,i,gradient){
+  return ps.reduce((sum,[x,y],k)=>{const b=velocityAt(state,x,y);return sum+area*(i===k?1/6:1/12)*(b[0]*gradient[0]+b[1]*gradient[1]);},0);
+}
+export const physicalDiffusion = state => ['advection','advection-reaction','reaction','steady-convection','steady-convection-reaction','steady-reaction'].includes(state.mode)?0:state.epsilon;
 export const addedDiffusion = state => ['none','supg','afc','afc-low'].includes(state.stabilization)?0:state.diffusion;
 export const frontInitial = '0.5*(tanh((x-0.15)/0.015)-tanh((x-0.35)/0.015))*exp(-((y-0.5)/0.18)^2)';
 const movingFront = frontInitial.replace(/\bx\b/g,'(x-vx*t)').replace(/\by\b/g,'(y-vy*t)');
@@ -17,6 +32,8 @@ export function preset(name = 'poisson') {
   if (name === 'layer') Object.assign(s, {mode:'transport',epsilon:0.005,betaX:1,source:'1',
     boundaries:{left:'0',right:'0',bottom:layerTrace,top:layerTrace}});
   if (name === 'sharp') s.source = `(exp((x-1)/0.025)/(0.025^2*(1-exp(-40)))+pi^2*${sharpQ})*sin(pi*y)`;
+  if(name==='solid-rotation')Object.assign(s,{mode:'advection',flow:'rotation',n:32,epsilon:0,betaX:0,betaY:0,source:'0',initial:'rotation(x,y)',dt:Math.PI/100,duration:2*Math.PI,scheme:'cn',massType:'lumped',stabilization:'afc'});
+  if(name==='rotation-diffusion')Object.assign(s,preset('solid-rotation'),{preset:name,mode:'parabolic',epsilon:.0001});
   if(name==='moving-front')Object.assign(s,{mode:'advection',n:24,epsilon:0,betaX:.55,betaY:0,source:'0',initial:frontInitial,scheme:'cn',massType:'lumped',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,movingFront]))});
   if(name==='heat-pulse')Object.assign(s,{mode:'heat',epsilon:.01,source:'0',initial:'exp(-((x-0.5)^2+(y-0.5)^2)/0.000625)',dt:.001,duration:.1,massType:'lumped',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,gaussian(.5,.5,.000625)]))});
   if(name==='moving-pulse')Object.assign(s,{mode:'parabolic',n:24,epsilon:.002,betaX:.5,betaY:.1,source:'0',initial:'exp(-((x-0.25)^2+(y-0.4)^2)/0.0049)',massType:'lumped',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,gaussian(.25,.4,.0049)]))});
@@ -34,6 +51,11 @@ export function preset(name = 'poisson') {
   if(name==='afc-front')Object.assign(s,preset('supg-front'),{preset:name,stabilization:'afc',massType:'lumped'});
   if(name==='afc-layer')Object.assign(s,preset('supg-layer'),{preset:name,stabilization:'afc'});
   if(name==='afc-affine')Object.assign(s,{mode:'transport',n:8,pattern:'forward',epsilon:.005,betaX:1,betaY:.3,source:'vx+vy+c*(1+x+y)',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,'1+x+y'])),stabilization:'afc',afcMu:1,afcTolerance:1e-11,afcMaxIterations:1500});
+  if(['steady-c','steady-r','steady-cr'].includes(name)){
+    const modes={'steady-c':'steady-convection','steady-r':'steady-reaction','steady-cr':'steady-convection-reaction'};
+    Object.assign(s,{mode:modes[name],n:name==='steady-c'?9:16,epsilon:0,betaX:name==='steady-r'?0:1,betaY:name==='steady-r'?0:.3,reaction:name==='steady-c'?0:2,source:'vx+vy+c*(1+x+y)',boundaries:Object.fromEntries(['left','right','bottom','top'].map(k=>[k,'1+x+y'])),stabilization:'none'});
+  }
+  if(name==='steady-dr')Object.assign(s,{mode:'steady-diffusion-reaction',epsilon:.02,reaction:2,source:'(2*eps*pi^2+c)*sin(pi*x)*sin(pi*y)',stabilization:'none'});
   return s;
 }
 
@@ -55,6 +77,7 @@ export function expression(source) {
     if(t && typeof t==='object') return ()=>t.number;
     if(t==='(') {const a=sum(); if(tokens[p++]!==')') throw Error('Missing closing parenthesis.'); return a;}
     if(['x','y','eps','t','vx','vy','c'].includes(t)) return (...v)=>v[['x','y','eps','t','vx','vy','c'].indexOf(t)];
+    if(t==='rotation'){if(tokens[p++]!=='(')throw Error('Use rotation(x,y).');const a=sum();if(tokens[p++]!==',')throw Error('Use rotation(x,y).');const b=sum();if(tokens[p++]!==')')throw Error('Missing closing parenthesis.');return(...v)=>rotationProfile(a(...v),b(...v));}
     if(t==='pi') return ()=>Math.PI;
     if(t==='e') return ()=>Math.E;
     if(Object.hasOwn(funcs,t)) {if(tokens[p++]!=='(')throw Error(`${t} needs parentheses.`);const a=sum();if(tokens[p++]!==')')throw Error('Missing closing parenthesis.');return (...v)=>funcs[t](a(...v));}
@@ -69,7 +92,7 @@ export function expression(source) {
 }
 
 export function makeMesh(n,pattern='forward') {
-  if(!Number.isInteger(n)||n<2||n>32)throw Error('Mesh subdivisions must be an integer from 2 to 32.');
+  if(!Number.isInteger(n)||n<2||n>128)throw Error('Mesh subdivisions must be an integer from 2 to 128.');
   if(!['forward','backward','alternating','shifted'].includes(pattern))throw Error('Unknown triangulation pattern.');
   const nodes=[],triangles=[],interior=[],boundary=[],dof=new Int32Array((n+1)**2).fill(-1);
   for(let j=0;j<=n;j++)for(let i=0;i<=n;i++){
@@ -99,10 +122,10 @@ export function boundaryEvaluator(state,mesh){
   const g=new Float64Array(mesh.nodes.length);
   for(const id of mesh.boundary){
     const [x,y]=mesh.nodes[id],values=[];
-    if(x===0)values.push(boundaries.left(x,y,epsilon,time,...beta,state.reaction??0));
-    if(x===1)values.push(boundaries.right(x,y,epsilon,time,...beta,state.reaction??0));
-    if(y===0)values.push(boundaries.bottom(x,y,epsilon,time,...beta,state.reaction??0));
-    if(y===1)values.push(boundaries.top(x,y,epsilon,time,...beta,state.reaction??0));
+    if(x===0)values.push(boundaries.left(x,y,epsilon,time,...velocityAt(state,x,y),state.reaction??0));
+    if(x===1)values.push(boundaries.right(x,y,epsilon,time,...velocityAt(state,x,y),state.reaction??0));
+    if(y===0)values.push(boundaries.bottom(x,y,epsilon,time,...velocityAt(state,x,y),state.reaction??0));
+    if(y===1)values.push(boundaries.top(x,y,epsilon,time,...velocityAt(state,x,y),state.reaction??0));
     g[id]=values.reduce((a,b)=>a+b,0)/values.length;
   }
   for(const [id,value] of Object.entries(state.nodeEdits||{})) {
@@ -119,7 +142,7 @@ export function sourceLoad(mesh,source,state,time=0){
   for(const tri of mesh.triangles){
     const ps=tri.map(id=>mesh.nodes[id]),area=triangleArea(ps);
     for(const[q,w]of quadrature){
-      const x=q.reduce((s,v,i)=>s+v*ps[i][0],0),y=q.reduce((s,v,i)=>s+v*ps[i][1],0),v=source(x,y,epsilon,time,...beta,state.reaction??0)*state.amplitude*area*w;
+      const x=q.reduce((s,v,i)=>s+v*ps[i][0],0),y=q.reduce((s,v,i)=>s+v*ps[i][1],0),v=source(x,y,epsilon,time,...velocityAt(state,x,y),state.reaction??0)*state.amplitude*area*w;
       for(let i=0;i<3;i++){const row=mesh.dof[tri[i]];if(row>=0)F[row]+=v*q[i];}
     }
   }return F;
@@ -127,9 +150,9 @@ export function sourceLoad(mesh,source,state,time=0){
 
 // Semidiscrete residual SUPG. The element Laplacian vanishes for affine P1
 // basis functions and constant diffusivity. H multiplies the time derivative.
-export function supgTau(state,grad){
+export function supgTau(state,grad,beta=velocity(state)){
   if(state.stabilization!=='supg')return 0;
-  const beta=velocity(state),speed=Math.hypot(...beta);if(speed===0)return 0;
+  const speed=Math.hypot(...beta);if(speed===0)return 0;
   const h=2*speed/grad.reduce((sum,g)=>sum+Math.abs(beta[0]*g[0]+beta[1]*g[1]),0);
   const eps=physicalDiffusion(state),pe=eps>0?speed*h/(2*eps):Infinity;
   const factor=pe<1e-3?pe/3-pe**3/45:pe===Infinity?1:1/Math.tanh(pe)-1/pe;
@@ -138,26 +161,28 @@ export function supgTau(state,grad){
 }
 export function supgLoad(mesh,source,state,time,elements){
   const load=new Float64Array(mesh.interior.length),eps=physicalDiffusion(state),beta=velocity(state);
-  for(const {tri,area,tau,stream} of elements){
+  for(const {tri,area,tau,stream,grad} of elements){
     if(tau===0)continue;
-    let integral=0;
-    for(const[q,w]of quadrature){const x=q.reduce((a,v,i)=>a+v*mesh.nodes[tri[i]][0],0),y=q.reduce((a,v,i)=>a+v*mesh.nodes[tri[i]][1],0);integral+=area*w*state.amplitude*source(x,y,eps,time,...beta,state.reaction??0);}
-    tri.forEach((id,i)=>{const row=mesh.dof[id];if(row>=0)load[row]+=tau*stream[i]*integral;});
+    for(const[q,w]of quadrature){
+      const x=q.reduce((a,v,i)=>a+v*mesh.nodes[tri[i]][0],0),y=q.reduce((a,v,i)=>a+v*mesh.nodes[tri[i]][1],0),b=velocityAt(state,x,y);
+      const value=area*w*state.amplitude*source(x,y,eps,time,...b,state.reaction??0);
+      tri.forEach((id,i)=>{const row=mesh.dof[id];if(row>=0)load[row]+=tau*(b[0]*grad[i][0]+b[1]*grad[i][1])*value;});
+    }
   }return load;
 }
 
 export function assemble(state) {
   const n=state.n,epsilon=physicalDiffusion(state);
-  if(!Number.isFinite(epsilon)||epsilon<0||(!isTransient(state)&&epsilon===0))throw Error('Physical diffusion ε must be positive for steady problems and nonnegative for time-dependent problems.');
+  if(!Number.isFinite(epsilon)||epsilon<0||(!isTransient(state)&&epsilon===0&&!['steady-convection','steady-convection-reaction','steady-reaction'].includes(state.mode)))throw Error('Diffusion ε must be positive for steady equations containing D and nonnegative otherwise.');
   for(const key of ['betaX','betaY','amplitude','diffusion'])if(!Number.isFinite(state[key]))throw Error(`${key} must be finite.`);
   if(!Number.isFinite(state.reaction??0))throw Error('Reaction coefficient c must be finite.');
   if(!['none','isotropic','supg','afc','afc-low'].includes(state.stabilization??'isotropic'))throw Error('Unknown stabilization method.');
   if(!Number.isFinite(state.supgScale??1)||(state.supgScale??1)<0)throw Error('SUPG strength must be finite and nonnegative.');
   if(state.diffusion<0)throw Error('Artificial diffusion must be nonnegative.');
   const mesh=makeMesh(n,state.pattern),N=mesh.interior.length;
-  const A=new Float64Array(N*N),K=new Float64Array(N*N),F=new Float64Array(N),lift=new Float64Array(N);
-  const S=new Float64Array(N*N),H=new Float64Array(N*N),supgElements=[];
-  const M=new Float64Array(N*N),lumped=new Float64Array(N),boundaryTerms=[];
+  const A=matrix(N),K=matrix(N),F=new Float64Array(N),lift=new Float64Array(N);
+  const S=matrix(N),H=matrix(N),supgElements=[];
+  const M=matrix(N),lumped=new Float64Array(N),boundaryTerms=[];
   const g=boundaryEvaluator(state,mesh)(0),source=expression(state.source),load=sourceLoad(mesh,source,state);
   F.set(load);
   const beta=velocity(state);
@@ -166,24 +191,26 @@ export function assemble(state) {
     const twice=(ps[1][0]-ps[0][0])*(ps[2][1]-ps[0][1])-(ps[2][0]-ps[0][0])*(ps[1][1]-ps[0][1]);
     const area=Math.abs(twice)/2;
     const grad=ps.map((_,i)=>[(ps[(i+1)%3][1]-ps[(i+2)%3][1])/twice,(ps[(i+2)%3][0]-ps[(i+1)%3][0])/twice]);
-    const tau=supgTau(state,grad),stream=grad.map(g=>beta[0]*g[0]+beta[1]*g[1]);
-    supgElements.push({tri,area,tau,stream});
+    const localBeta=velocityAt(state,ps.reduce((v,p)=>v+p[0]/3,0),ps.reduce((v,p)=>v+p[1]/3,0));
+    const tau=supgTau(state,grad,localBeta),stream=grad.map(g=>localBeta[0]*g[0]+localBeta[1]*g[1]);
+    supgElements.push({tri,area,tau,stream,grad});
     for(let i=0;i<3;i++){
       const row=mesh.dof[tri[i]];if(row<0)continue;lumped[row]+=area/3;
       for(let j=0;j<3;j++){
         const col=mesh.dof[tri[j]],k=area*(grad[i][0]*grad[j][0]+grad[i][1]*grad[j][1]);
         const m=area*(i===j?1/6:1/12);
-        const a=epsilon*k+area/3*(beta[0]*grad[j][0]+beta[1]*grad[j][1])+(state.reaction??0)*m;
-        const h=tau*stream[i]*area/3,s=tau*stream[i]*area*stream[j]+(state.reaction??0)*h;
+        const a=epsilon*k+convectionEntry(state,ps,area,i,grad[j])+(state.reaction??0)*m;
+        let h=0,s=0;
+        for(const[q,w]of quadrature){const x=q.reduce((v,a,k)=>v+a*ps[k][0],0),y=q.reduce((v,a,k)=>v+a*ps[k][1],0),b=velocityAt(state,x,y),si=b[0]*grad[i][0]+b[1]*grad[i][1],sj=b[0]*grad[j][0]+b[1]*grad[j][1];h+=tau*area*w*si*q[j];s+=tau*area*w*si*(sj+(state.reaction??0)*q[j]);}
         if(col<0){F[row]-=a*g[tri[j]];lift[row]-=k*g[tri[j]];boundaryTerms.push([row,tri[j],a,k,m,s,h]);}
-        else{A[row*N+col]+=a;K[row*N+col]+=k;M[row*N+col]+=m;S[row*N+col]+=s;H[row*N+col]+=h;}
+        else{add(A,row,col,a);add(K,row,col,k);add(M,row,col,m);add(S,row,col,s);add(H,row,col,h);}
       }
     }
   }
   for(const [key,value] of Object.entries(state.matrixEdits||{})){
     const [i,j]=key.split(',').map(Number);
     if(!Number.isInteger(i)||!Number.isInteger(j)||i<0||j<0||i>=N||j>=N||!Number.isFinite(value))throw Error('Invalid matrix edit.');
-    A[i*N+j]=value;
+    set(A,i,j,value);
   }
   for(const [key,value] of Object.entries(state.rhsEdits||{})){
     const i=+key;if(!Number.isInteger(i)||i<0||i>=N||!Number.isFinite(value))throw Error('Invalid right-hand-side edit.');F[i]=value;
@@ -193,6 +220,7 @@ export function assemble(state) {
 }
 
 export function solveDense(A,rhs) {
+  if(isSparse(A))return solveFactored(factorDense(A,rhs.length),rhs);
   const n=rhs.length,a=A.slice(),b=rhs.slice();
   let norm=0;for(const v of a)norm=Math.max(norm,Math.abs(v));
   if(!Number.isFinite(norm)||norm===0)throw Error('The edited matrix is singular. Restore entries or reset the experiment.');
@@ -214,6 +242,9 @@ export function solveDense(A,rhs) {
 export function exactSolution(state){
   const clean=preset(state.preset);
   if(state.mode!==clean.mode||state.source!==clean.source||state.amplitude!==1||(!isTransient(state)&&(state.betaX!==clean.betaX||state.betaY!==clean.betaY))||Object.keys(state.matrixEdits).length||Object.keys(state.rhsEdits).length||Object.keys(state.nodeEdits).length||Object.keys(clean.boundaries).some(k=>state.boundaries[k]!==clean.boundaries[k]))return null;
+  if(['solid-rotation','rotation-diffusion'].includes(state.preset)){if(physicalDiffusion(state)!==0||state.flow!=='rotation'||state.initial!==clean.initial||state.reaction!==0)return null;return(x,y,t=0)=>{const a=x-.5,b=y-.5;return rotationProfile(.5+Math.cos(t)*a+Math.sin(t)*b,.5-Math.sin(t)*a+Math.cos(t)*b);};}
+  if(['steady-c','steady-r','steady-cr'].includes(state.preset))return(x,y)=>1+x+y;
+  if(state.preset==='steady-dr')return(x,y)=>Math.sin(Math.PI*x)*Math.sin(Math.PI*y);
   if(state.preset==='afc-affine')return(x,y)=>1+x+y;
   if(state.preset==='steady-adr')return(x,y)=>Math.sin(Math.PI*x)*Math.sin(Math.PI*y);
   if(state.preset==='forming-layer'){if(state.initial!==clean.initial||state.betaX!==1||state.betaY!==0)return null;const q=expression(layerTrace);return(x,y,t=0)=>(1-Math.exp(-t))*q(x,y,state.epsilon);}
@@ -245,6 +276,7 @@ export function interpolate(mesh,u,x,y){
 }
 
 export function diagnostics(A,F,b,u,mesh,exact,rows=null){
+  if(!rows&&isSparse(A))rows=matrixRows(A);
   let residual=0,normF=0,normA=0,normB=0;
   for(let i=0;i<b.length;i++){
     let sum=-F[i],rowNorm=0;
@@ -266,9 +298,9 @@ export function diagnostics(A,F,b,u,mesh,exact,rows=null){
 
 export function compute(state){
   const started=performance.now(),system=assemble(state),{A,K,F,lift,N,mesh,g}=system,delta=addedDiffusion(state);
-  let effectiveA=A.map((a,k)=>a+delta*K[k]+system.S[k]),effectiveF=F.map((f,i)=>f+delta*lift[i]+system.supgF[i]);
+  let effectiveA=combine([A,1],[K,delta],[system.S,1]),effectiveF=F.map((f,i)=>f+delta*lift[i]+system.supgF[i]);
   for(const[row,id,,,,s]of system.boundaryTerms)effectiveF[row]-=s*g[id];
-  const rawB=solveDense(A,F);let afcResult=null,stableB=delta>0||state.stabilization==='supg'?solveDense(effectiveA,effectiveF):rawB.slice();
+  let rawB;try{rawB=solveDense(A,F);}catch(error){if(state.mode==='steady-convection')throw Error('The pure-convection Galerkin matrix is singular on this mesh. Try the example mesh n = 9, or choose CD with positive physical diffusion. No diffusion was added automatically.');throw error;}let afcResult=null,stableB=delta>0||state.stabilization==='supg'?solveDense(effectiveA,effectiveF):rawB.slice();
   if(isAfc(state)){afcResult=solveAfcSteady(state,system);({stableB,effectiveA,effectiveF}=afcResult);}
   const raw=g.slice(),stable=g.slice();mesh.interior.forEach((id,i)=>{raw[id]=rawB[i];stable[id]=stableB[i];});
   const exact=exactSolution(state),reference=exact?mesh.nodes.map(([x,y])=>exact(x,y)):null;

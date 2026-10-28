@@ -2,9 +2,30 @@
 
 An interactive finite element laboratory on Ω = (0,1)². It solves real P1 triangular Galerkin systems in a browser worker, displays a rotatable solution surface or a 2D field, and lets you change the mesh, source, boundary data, reduced matrix A, and reduced load vector f.
 
-The equation list also includes time-dependent convection, diffusion, and convection–diffusion. These solve Mḃ + Ab = f with playback, time scrubbing, consistent/lumped mass comparison, and backward Euler or Crank–Nicolson.
+Choose Steady or Transient, then C, D, R, CD, CR, DR, or CDR, and a matching example. C means convection/advection, D means physical diffusion, and R means reaction. Transient problems include playback and time scrubbing; Galerkin/isotropic/SUPG use the selected implicit integrator, while FCT uses its documented SSPRK2 substeps.
 
 No package installation or build step is needed. The only external resource is an optional Google Fonts stylesheet; system fonts work offline. All numerical computation runs locally in the browser. Session edits live in memory and reset on reload. **Export data** downloads the complete experiment, mesh, sparse matrices, and solutions as JSON.
+
+
+## Organized experiment setup
+
+The sidebar follows the order **Problem → Mesh → Coefficients/forcing → Time/initial data (transient only) → Boundary data → Stabilization**. First select the time setting and physical terms, then choose a matching example. The large workspace shows only the current experiment summary, equation, and solution; the former rows of overlapping example buttons have been removed. The system inspector, source/boundary expressions, matrix edits, exact reference, μ control, mass choices, and exports remain available.
+
+| Terms | Steady starter | Transient starter |
+| --- | --- | --- |
+| C: convection/advection | Compatible affine transport | Moving front · FCT |
+| D: diffusion | Smooth sine field | Diffusing pulse |
+| R: reaction | Reaction equilibrium | Pure decay / growth |
+| CD | Outflow layer · BJK AFC | Moving and diffusing pulse |
+| CR | Affine transport + reaction | Moving and decaying pulse |
+| DR | Diffusion–reaction sine field | Spreading and decay |
+| CDR | CDR sine field | Moving, spreading, and decay |
+
+Only examples matching the time setting and equation terms appear. Inactive physical coefficients are disabled: choose a family containing R to edit reaction, and one containing D to edit physical diffusion. SUPG is unavailable without a convection term. The method selector identifies **AFC · BJK-type limiter** for steady problems and **FCT · Zalesak-style limiter (SSPRK2)** for transient problems. Existing numerical methods are retained; no additional limiter has been added in this reorganization.
+
+The four added steady starter cases cover C, R, CR, and DR. The C/R/CR examples use `u = 1+x+y`, matching source `vx+vy+c*(1+x+y)`, and matching traces. The DR example uses `u = sin(pi*x)*sin(pi*y)` with source `(2*eps*pi^2+c)*u`. Pure steady convection usually takes inflow boundary data: this laboratory retains the full Dirichlet machinery and supplies compatible traces in its affine starter. Its default n = 9 gives a solvable Galerkin system, while some other meshes (including n = 16) produce a singular baseline. That condition is reported explicitly; the app does not insert physical diffusion silently. Use CD with small positive ε for a robust boundary-layer experiment. Pure steady reaction requires nonzero c.
+
+`dist/experiments.js` contains the example catalogue, family mapping, defaults, and method availability. Five checks in `tests/experiments.test.mjs` cover all 14 starter combinations, physical-term activation, new manufactured equilibria, the singular pure-convection case, and method labels/availability. The full suite has 64 checks. Direct links such as `?example=afc-affine` and `?example=afc-layer` still load their matching time setting and equation family.
 
 ## Run and test
 
@@ -24,7 +45,7 @@ node --test tests/*.test.mjs
 
 ## Time-dependent experiments: moving layers and mass lumping
 
-The equation list includes steady Poisson, steady convection–diffusion, steady advection–diffusion–reaction (ADR), and transient convection, diffusion, convection–diffusion, pure reaction, diffusion–reaction, advection–reaction, and full ADR. Selecting an equation loads its matching starter experiment. The three **Watch in time** buttons load the transient examples directly.
+In **Problem**, choose **Transient**, then the desired equation terms, and an example from the filtered list. Every C/D/R combination has a starter example. Changing the time setting or equation terms loads a matching default; choosing another example loads that example’s documented parameters and comparison method.
 
 Each time-dependent experiment solves
 
@@ -104,7 +125,7 @@ For θ = 1 (backward Euler) or θ = ½ (Crank–Nicolson), let Aδ = A + δK and
 
 For the lumped comparison, replace MII by the full-row-sum diagonal Mᴸ and omit the MIB term, since the lumped mass has no off-diagonal boundary block. Adding δK changes spatial diffusion; it does not change M. Backward Euler and Crank–Nicolson have distinct damping and accuracy properties, so the UI identifies the time integrator alongside the mass treatment.
 
-The worker reuses partial-pivot LU factors for each distinct step size and uses sparse row products for time-step loads. This avoids rebuilding or refactoring a dense system at every frame. There is no explicit Euler option in this version; the displayed Courant and diffusion numbers are diagnostics, not blanket stability or positivity guarantees.
+The worker reuses partial-pivot LU factors (n≤32) or sparse preconditioners (n>32) for each distinct step size and uses sparse row products for time-step loads. This avoids rebuilding or refactoring a dense system at every frame. There is no explicit Euler option in this version; the displayed Courant and diffusion numbers are diagnostics, not blanket stability or positivity guarantees.
 
 ## The steady experiment: a thin layer and artificial diffusion
 
@@ -175,7 +196,7 @@ The default solves −Δu = 2π² sin(πx) sin(πy), with u = 0 on ∂Ω. The ex
 - **Inspect nodes:** click the mesh preview or the solution plot. The inspector shows the global node ID, coordinates, and free DOF if interior. Boundary node values can be prescribed individually; interior nodal values are solved unknowns, so edit their A or f instead.
 - **Mesh rules:** changing n or the diagonal pattern clears all indexed overrides because their locations/connectivity change. PDE/source/boundary changes retain indexed overrides. **Clear edits**, presets, and **Reset** clear them.
 
-Indices are zero based. Nodes are ordered left to right, bottom to top: node(i,j) = j(n+1)+i. Interior DOF(i,j) = (j−1)(n−1)+(i−1), for 1 ≤ i,j ≤ n−1. The default splits each square along its bottom-left to top-right diagonal (slope +1). Slope −1 and alternating patterns are also available. The range is 2 ≤ n ≤ 32.
+Indices are zero based. Nodes are ordered left to right, bottom to top: node(i,j) = j(n+1)+i. Interior DOF(i,j) = (j−1)(n−1)+(i−1), for 1 ≤ i,j ≤ n−1. The default splits each square along its bottom-left to top-right diagonal (slope +1). Slope −1 and alternating patterns are also available. The range is 2 ≤ n ≤ 128.
 
 ## Discretization and stabilization
 
@@ -254,7 +275,7 @@ The reaction element matrix is **Rᵀ = cMᵀ**, assembled exactly including its
 
 ## Layers and SUPG: three reproducible comparisons
 
-Use the **Layers / SUPG** buttons. The orange solution is always unstabilized Galerkin with consistent time mass. The teal **Comparison** uses the selected method: none, isotropic δK, or SUPG. These methods are mutually exclusive; an old δ value is ignored in SUPG/none mode. Keep comparison mass consistent to isolate stabilization. Switching methods rebuilds the run and preserves the selected time.
+Use **Steady → CD → Outflow layer · SUPG**, **Transient → C → Moving front · SUPG**, or **Transient → CDR → Developing outflow layer**. The orange solution is always unstabilized Galerkin with consistent time mass. The teal **Comparison** uses the selected method: none, isotropic δK, or SUPG. These methods are mutually exclusive; an old δ value is ignored in SUPG/none mode. Keep comparison mass consistent to isolate stabilization. Switching methods rebuilds the run and preserves the selected time.
 
 ### Steady outflow layer
 
@@ -319,14 +340,14 @@ SUPG is not shock capturing, flux correction, or a discrete maximum-principle gu
 
 ## Algebraic flux correction (AFC)
 
-Select **Steady AFC layer** or **Nonnegative moving front** under **Flux correction**. The comparison selector now offers **AFC · low-order graph diffusion** and **AFC · limited flux correction**. These are alternatives to SUPG and isotropic diffusion, not extra terms stacked on top of them.
+Select **Steady AFC layer** or **Nonnegative moving front** in the filtered **Problem → Example** selector. The comparison selector now offers **AFC · low-order graph diffusion** and **AFC · limited flux correction**. These are alternatives to SUPG and isotropic diffusion, not extra terms stacked on top of them.
 
 AFC is nonlinear even for a linear PDE: its limiter depends on the solution. That does not always require a nonlinear system solve. This app uses iterative steady AFC and explicit transient flux-corrected transport (FCT):
 
 | Method | Comparison computation | Cost reported |
 | --- | --- | --- |
 | Steady low order | One linear solve with graph diffusion | Solve time, zero limiter iterations |
-| Steady limited AFC | Damped fixed-point iterations; one reused LU factorization | Iterations, scaled nonlinear residual, convergence, AFC time |
+| Steady limited AFC | Damped fixed-point iterations; reused LU or sparse preconditioner | Iterations, scaled nonlinear residual, convergence, AFC time |
 | Transient low order | Lumped-mass SSPRK2 with graph diffusion | Internal substeps and stepping time |
 | Transient limited FCT | Same SSPRK2 stages plus pairwise flux limiting | Internal substeps, limiter passes, stepping time |
 
@@ -334,7 +355,7 @@ AFC is nonlinear even for a linear PDE: its limiter depends on the solution. Tha
 
 1. Choose **Steady AFC layer**. Defaults are n = 16, ε = 0.005, β = (1,0), c = 0, source = 1, tolerance = 1e−8, relaxation = 0.5, and at most 500 iterations.
 2. Select **With AFC** above the plot. The uncorrected Galerkin maximum is about 1.846. Limited AFC gives about 0.9643; switching to **AFC · low-order graph diffusion** gives about 0.9375. Compare the cross-section with the exact curve: the thin boundary layer remains unresolved.
-3. On the tested machine the corrected steady solve took about 55 ms overall, including about 38 ms inside AFC, and converged in 110 iterations. These are illustrative timings, not a speed guarantee. Mesh size, tolerance, and relaxation affect cost; refinement also increases the cost of the dense LU factorization.
+3. On the tested machine the corrected steady solve took about 55 ms overall, including about 38 ms inside AFC, and converged in 110 iterations. These are illustrative timings, not a speed guarantee. Mesh size, tolerance, and relaxation affect cost; refinement increases linear-solver work (dense LU through n=32, sparse Krylov above).
 4. Set the iteration limit to 1 to inspect failure reporting. The app labels the result **AFC iteration limit** and reports the last iterate and its residual; it does not mark it converged. Restore 500. If another case stalls, try smaller relaxation or mesh refinement and inspect the residual; convergence is not guaranteed by increasing the limit.
 
 The stopping residual is the infinity norm of `L b − (F_low + limited_flux(b))`, scaled by the largest rowwise sum of absolute matrix contributions plus the absolute corrected right-hand side. A converged algebraic residual is separate from discretization error.
@@ -363,11 +384,11 @@ This implementation accepts c ≥ 0 and assembled PDE coefficients. Clear manual
 
 JSON export v4 includes AFC convergence/substep metadata and graph D. For steady AFC, `stabilizedA` contains the retained graph diffusion at the returned iterate. For transient AFC, `stabilizedA` and `stabilizedF` describe the **low-order backbone**; nonlinear corrections are applied separately at each explicit stage. There is no single implicit comparison step matrix or right-hand side, so those export fields are null and the step-matrix inspector is disabled. The comparison's implicit backward-error metric is also unavailable. SUPG exports remain included.
 
-`dist/afc.js` implements graph construction, steady limiting, FCT stages, and automatic substeps. `dist/linear.js` holds the shared LU routines. Twelve checks in `tests/afc.test.mjs` cover graph signs and conservation, bounded pair fluxes, nonlinear convergence and iteration-limit reporting, moving-front nonnegativity/sharpness, changing-boundary manufactured solutions on all three meshes, signed data, and unsupported input rejection. Together with the existing checks, the test suite contains 48 tests. These finite tests do not establish accuracy or convergence for arbitrary input.
+`dist/afc.js` implements graph construction, steady limiting, FCT stages, and automatic substeps. `dist/linear.js` holds the shared LU routines. Twelve checks in `tests/afc.test.mjs` cover graph signs and conservation, bounded pair fluxes, nonlinear convergence and iteration-limit reporting, moving-front nonnegativity/sharpness, changing-boundary manufactured solutions on all three meshes, signed data, and unsupported input rejection. Together with the existing checks, the test suite contains 64 tests. These finite tests do not establish accuracy or convergence for arbitrary input.
 
 ### Adjustable μ and affine preservation
 
-Choose **Affine preservation · μ** under **Flux correction**. Its exact solution is **u = 1+x+y**, with ε = 0.005, β = (1,0.3), c = 0, source = βx+βy+c(1+x+y), and exact Dirichlet traces. It starts on the original slope +1 mesh with n = 8. Positive reaction can also be tested without changing its reference because the source expression includes c. The default solve tolerance is 1e−11.
+Choose **Affine preservation · μ** in the filtered **Problem → Example** selector. Its exact solution is **u = 1+x+y**, with ε = 0.005, β = (1,0.3), c = 0, source = βx+βy+c(1+x+y), and exact Dirichlet traces. It starts on the original slope +1 mesh with n = 8. Positive reaction can also be tested without changing its reference because the source expression includes c. The default solve tolerance is 1e−11.
 
 The **Limiter budget μ** control multiplies the steady nodal budgets: `R± = min(1, μQ±/P±)`. Its range is 0–10. μ = 0 is an exploratory low-order endpoint; the published limiter uses positive parameters. Larger μ relaxes limiting. This control has no effect on transient Zalesak limiting and is disabled for the explicit low-order comparison option.
 
@@ -383,3 +404,105 @@ To explore the distinction between a reproduced affine solution and an inactive 
 4. For the shifted example, the displayed threshold is about **0.7341544**. It is computed from the exact profile's flux-budget ratios and is sufficient to remove limiting **for this field and these coefficients only**. It is not an all-direction geometry bound. Changing mesh size or coefficients changes it. μ = 1 is not asserted to suffice on arbitrary nonsymmetric meshes.
 
 The shifted mesh uses actual triangle areas for source quadrature, L² error, and integrals; interpolation searches adjacent cells to find its physical triangles. The original uniform mesh generation is unchanged. Regression checks verify central symmetry and unlimited affine fluxes on all three original patterns for several affine directions, plus the shifted example, geometric quadrature, interpolation, μ validation, and the unchanged transient limiter.
+
+
+### Open the convection-dominated examples directly
+
+The app now starts with **Convection-dominated AFC layer**, with ε = 0.005, β = (1,0), n = 16 and mesh Péclet number 6.25. Use **Problem → Example** to select **Affine preservation · μ** without returning to the buttons above the plot. That affine preset solves `−0.005Δu + (1,0.3)·∇u = 1.3` with exact traces `u = 1+x+y`; n = 8 gives mesh Péclet number approximately 13.05. It is a convection-dominated consistency test, whereas the layer preset tests oscillation control.
+
+With the local server running, open `http://127.0.0.1:4173/?example=afc-affine` for the affine test or `http://127.0.0.1:4173/?example=afc-layer` for the layer. Selecting any preset updates this URL parameter, so the chosen experiment survives reloads and can be bookmarked. Smooth Poisson remains available through the experiment selector and Reset. If the new selector is absent, the displayed page is an older version; reload the updated local checkout or deploy the current files before using the hosted site.
+
+## Solid-body rotation (transient C)
+
+Choose **Transient → C → Solid-body rotation · three shapes**, or open
+`?example=solid-rotation`. This adds the benchmark in Kuzmin, *Explicit and implicit
+FEM-FCT algorithms with flux linearization*, JCP 228 (2009), 2517–2534,
+§7.1, equations (64)–(65), printed page 2526.
+
+The velocity is β(x,y) = (0.5−y, x−0.5), with zero diffusion, reaction and source.
+It rotates counterclockwise about (0.5,0.5), with period 2π. The initial field
+`rotation(x,y)` contains three disjoint radius-0.15 bodies:
+
+- A unit-height cylinder centered at (0.5,0.75), with the slot removed where
+  |x−0.5| < 0.025 and y < 0.85.
+- A cone centered at (0.5,0.25), height 1−r.
+- A hump centered at (0.25,0.5), height (1+cos(πr))/4.
+
+Here r is distance from each body's center divided by 0.15, and each profile is
+zero outside its disk. The exact reference evaluates the initial field at the
+inverse-rotated point, so it returns to the initial field at T=2π. Editing source,
+boundary data or initial data disables this benchmark reference.
+
+The default is n=32, Δt=π/100, T=2π (200 output intervals), a consistent-mass
+Crank–Nicolson baseline and the existing lumped SSPRK2 spatial FCT comparison.
+Play the trajectory, then scrub to the last frame. Compare FCT with low-order
+graph diffusion to see how limiting restores sharpness, and with Galerkin to
+see undershoots/overshoots. Try y=0.75 for the slot cross-section at t=0 or 2π.
+The coarse mesh resolves the 0.05-wide slot poorly; refinement matters.
+
+This is the paper's **test data**, not an implementation of its CN-FCT or flux
+linearization algorithms. The app uses P1 triangles and its existing methods.
+The paper prescribes zero inflow values; this app retains zero Dirichlet traces
+on **all** edges. The exact support stays inside the domain, but numerical
+spreading can reach the boundary, so monitor integral drift; exact discrete mass
+conservation is not promised. The mesh now supports n≤128; n=32 remains the rotation preset default.
+
+Convection integrates the affine velocity exactly against the P1 test functions.
+The full AFC graph and reduced Galerkin matrix use the same element entries;
+SUPG uses local centroid τ and quadrature for the varying streamline factors.
+CFL and Péclet summaries use the maximum speed over the square, √(1/2).
+
+
+### Rotating and diffusing (transient CD)
+
+Choose **Transient → CD → Rotating and diffusing · three shapes**, or use
+`?example=rotation-diffusion`. This extension keeps the same rotation field,
+initial profiles, zero boundary traces, and T=2π, and adds adjustable physical
+ε (default 0.0001) to both the baseline and comparison operators.
+Try ε=0, 0.0001, and 0.001 to distinguish physical spreading from numerical
+smoothing. Compare FCT, low-order graph diffusion, SUPG, and artificial diffusion.
+Physical spreading prevents an exact return after one revolution.
+
+For positive ε, the app deliberately supplies no exact reference or L² error:
+the inviscid rotated profile is not the solution of this diffusion problem, and
+whole-plane heat convolution would not satisfy the square's zero boundary data.
+Setting ε=0 restores the inviscid reference for unedited benchmark data.
+Boundary absorption can change the integral as the diffusing field reaches edges.
+
+
+## Fine meshes: 64 and 128
+
+The mesh slider supports 2–128 subdivisions per direction. At n=128 the mesh has
+16,641 nodes, 32,768 P1 triangles and 16,129 interior unknowns. Defaults stay small;
+choose 64 or 128 explicitly for refinement experiments.
+
+At n≤32, existing dense pivoted LU remains in use. Above 32, all assembled and
+inspection matrices use sparse rows. Linear solves use ILU(0)-preconditioned
+BiCGSTAB, with restarted GMRES as a fallback; the original matrix is never
+regularized. Guarded pivots affect the preconditioner only. Each solution is
+checked against the true residual (relative 2-norm target 1e-11, acceptance up
+to 5e-11). Failure to converge raises an error and leaves the last successful
+plot marked stale. Difficult pure-convection or edited systems can fail.
+Time-step preconditioners are reused, with the preceding solution as a starting
+estimate. Steady AFC reuses its low-order preconditioner across limiter iterations.
+Its nonlinear convergence tolerance remains a separate check.
+
+All requested numerical time steps are computed (up to 240 as before). To bound
+playback memory, n=33–64 stores at most 121 frames and n=65–128 at most 81,
+including both endpoints. The timeline shows saved frames and computed steps;
+exports include `computedSteps` and `savedFrameStride`. Changing inputs terminates
+an obsolete worker calculation before starting the latest one. Sparse matrix
+inspection, arbitrary entry edits, and coordinate-triplet JSON exports remain
+available. Dense reconstruction is not needed for drawing the sparsity preview.
+
+Measured locally in Node on this workstation, the default 200-step full revolution
+at n=128 took approximately 15 s for pure rotation and 9 s for rotation with
+ε=0.0001. These are solver-only examples, not browser/device guarantees. Both
+saved 68 frames and used 1,000 internal FCT substeps. Pure-rotation FCT final
+range was [0,0.967], with L² error about 0.114. Refining space alone does not
+remove time-discretization error: the baseline still uses Δt=π/100.
+
+Five tests in `tests/sparse.test.mjs` check sparse/dense agreement, nonlocal
+entries and structured cloning, n=128 Poisson convergence, retained time steps
+with thinned playback, and explicit rejection of an inconsistent singular solve.
+The full test suite also covers the existing FEM, reaction, SUPG and AFC paths.

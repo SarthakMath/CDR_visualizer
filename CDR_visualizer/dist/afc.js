@@ -1,4 +1,5 @@
-import {physicalDiffusion,velocity,expression,sourceLoad,boundaryEvaluator} from './fem.js';
+import {matrix,get,set,add,clone,rows as matrixRows} from './matrix.js';
+import {physicalDiffusion,velocity,convectionEntry,expression,sourceLoad,boundaryEvaluator} from './fem.js';
 import {factorDense,solveFactored} from './linear.js';
 export const isAfc = state => ['afc','afc-low'].includes(state.stabilization);
 
@@ -12,12 +13,12 @@ export function buildAfc(state,system){
   for(const tri of mesh.triangles){
     const p=tri.map(id=>mesh.nodes[id]),twice=(p[1][0]-p[0][0])*(p[2][1]-p[0][1])-(p[2][0]-p[0][0])*(p[1][1]-p[0][1]),area=Math.abs(twice)/2;
     const grad=p.map((_,i)=>[(p[(i+1)%3][1]-p[(i+2)%3][1])/twice,(p[(i+2)%3][0]-p[(i+1)%3][0])/twice]);
-    for(let i=0;i<3;i++){mass[tri[i]]+=area/3;for(let j=0;j<3;j++)add(tri[i],tri[j],eps*area*(grad[i][0]*grad[j][0]+grad[i][1]*grad[j][1])+area/3*(beta[0]*grad[j][0]+beta[1]*grad[j][1])+(state.reaction??0)*area*(i===j?1/6:1/12));}
+    for(let i=0;i<3;i++){mass[tri[i]]+=area/3;for(let j=0;j<3;j++)add(tri[i],tri[j],eps*area*(grad[i][0]*grad[j][0]+grad[i][1]*grad[j][1])+convectionEntry(state,p,area,i,grad[j])+(state.reaction??0)*area*(i===j?1/6:1/12));}
   }
   const edges=[],neighbors=rows.map((r,i)=>[...r.keys()].filter(j=>j!==i)),lowRows=rows.map(r=>new Map(r));
   for(let i=0;i<size;i++)for(const[j,a]of rows[i])if(j>i){const viscosity=Math.max(0,a,rows[j].get(i)||0);if(viscosity>0){edges.push({i,j,viscosity});lowRows[i].set(j,a-viscosity);lowRows[j].set(i,(rows[j].get(i)||0)-viscosity);lowRows[i].set(i,(lowRows[i].get(i)||0)+viscosity);lowRows[j].set(j,(lowRows[j].get(j)||0)+viscosity);}}
-  const D=new Float64Array(N*N),lowOperator=new Float64Array(N*N);let maxStep=Infinity;
-  for(const id of mesh.interior){const i=mesh.dof[id],diag=lowRows[id].get(id)||0;if(diag>0)maxStep=Math.min(maxStep,.8*mass[id]/diag);for(const[j,v]of lowRows[id]){const col=mesh.dof[j];if(col>=0){lowOperator[i*N+col]=v;D[i*N+col]=v-system.A[i*N+col];}}}
+  const D=matrix(N),lowOperator=matrix(N);let maxStep=Infinity;
+  for(const id of mesh.interior){const i=mesh.dof[id],diag=lowRows[id].get(id)||0;if(diag>0)maxStep=Math.min(maxStep,.8*mass[id]/diag);for(const[j,v]of lowRows[id]){const col=mesh.dof[j];if(col>=0){set(lowOperator,i,col,v);set(D,i,col,v-get(system.A,i,col));}}}
   return {mesh,N,size,rows,lowRows,edges,neighbors,mass,D,lowOperator,maxStep};
 }
 export function afcReducedLoad(graph,load,g){
@@ -58,17 +59,18 @@ export function solveAfcSteady(state,system){
   if(!Number.isInteger(maxIterations)||maxIterations<1||maxIterations>2000)throw Error('AFC iteration limit must be an integer from 1 to 2000.');
   if(!Number.isFinite(tolerance)||tolerance<1e-12||tolerance>1e-3)throw Error('AFC tolerance must be between 1e-12 and 1e-3.');
   if(!Number.isFinite(relax)||relax<=0||relax>1)throw Error('AFC relaxation must be in (0,1].');
+  const lowMatrixRows=matrixRows(graph.lowOperator,N);
   let b=solveFactored(factor,lowRhs),iterations=0,converged=false,nonlinearResidual=Infinity,limited;
   for(;;){
     limited=state.stabilization==='afc-low'?{correction:new Float64Array(N),alpha:new Float64Array(graph.edges.length),limitedFraction:1}:steadyFluxes(graph,fullField(graph,b,g),mu);
     const rhs=lowRhs.map((v,i)=>v+limited.correction[i]);let norm=0,scale=0;
-    for(let i=0;i<N;i++){let v=-rhs[i],row=0;for(let j=0;j<N;j++){const a=graph.lowOperator[i*N+j];v+=a*b[j];row+=Math.abs(a*b[j]);}norm=Math.max(norm,Math.abs(v));scale=Math.max(scale,row+Math.abs(rhs[i]));}
+    for(let i=0;i<N;i++){let v=-rhs[i],row=0;for(const[j,a]of lowMatrixRows[i]){v+=a*b[j];row+=Math.abs(a*b[j]);}norm=Math.max(norm,Math.abs(v));scale=Math.max(scale,row+Math.abs(rhs[i]));}
     nonlinearResidual=norm/(scale||1);if(nonlinearResidual<=tolerance){converged=true;break;}if(iterations>=maxIterations)break;
     const next=solveFactored(factor,rhs);b=b.map((v,i)=>(1-relax)*v+relax*next[i]);iterations++;
   }
   // Report the actual final nonlinear operator, not the frozen low-order solve.
-  const effectiveA=system.A.slice(),effectiveF=system.F.slice();
-  graph.edges.forEach(({i,j,viscosity},k)=>{const v=(1-limited.alpha[k])*viscosity,ri=graph.mesh.dof[i],rj=graph.mesh.dof[j];if(ri>=0){effectiveA[ri*N+ri]+=v;if(rj>=0)effectiveA[ri*N+rj]-=v;else effectiveF[ri]+=v*g[j];}if(rj>=0){effectiveA[rj*N+rj]+=v;if(ri>=0)effectiveA[rj*N+ri]-=v;else effectiveF[rj]+=v*g[i];}});
+  const effectiveA=clone(system.A),effectiveF=system.F.slice();
+  graph.edges.forEach(({i,j,viscosity},k)=>{const v=(1-limited.alpha[k])*viscosity,ri=graph.mesh.dof[i],rj=graph.mesh.dof[j];if(ri>=0){add(effectiveA,ri,ri,v);if(rj>=0)add(effectiveA,ri,rj,-v);else effectiveF[ri]+=v*g[j];}if(rj>=0){add(effectiveA,rj,rj,v);if(ri>=0)add(effectiveA,rj,ri,-v);else effectiveF[rj]+=v*g[i];}});
   return {stableB:b,effectiveA,effectiveF,afcD:graph.D,afc:{mu,iterations,converged,nonlinearResidual,limitedFraction:limited.limitedFraction,ms:performance.now()-started,kind:'steady',edgeCount:graph.edges.length,...(state.preset==='afc-affine'?{affineLimiter:steadyLinearityProbe(graph,state.stabilization==='afc-low'?0:mu)}:{})}};
 }
 

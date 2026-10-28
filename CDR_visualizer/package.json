@@ -6,6 +6,6 @@
   "scripts": {
     "start": "python3 -m http.server 4173 --bind 127.0.0.1 --directory dist",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check dist/app.js && node --check dist/fem.js && node --check dist/transient.js && node --check dist/plots.js && node --check dist/worker.js && node --check dist/linear.js && node --check dist/afc.js"
+    "check": "node --check dist/app.js && node --check dist/fem.js && node --check dist/transient.js && node --check dist/plots.js && node --check dist/worker.js && node --check dist/linear.js && node --check dist/afc.js && node --check dist/experiments.js && node --check dist/matrix.js && node --check dist/sparse-solver.js"
   }
 }

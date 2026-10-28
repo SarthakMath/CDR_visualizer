@@ -1,3 +1,4 @@
+import {rows as matrixRows} from './matrix.js';
 import {interpolate,exactSolution} from './fem.js';
 const palette=[[36,74,128],[67,142,179],[127,188,182],[224,214,161],[239,177,107],[220,116,68],[187,67,59]];
 export function color(t,alpha=1){
@@ -73,7 +74,7 @@ export function crossPlot(canvas,result,state,slice){const{ctx,w,h}=setup(canvas
   text(ctx,'x',w-10,h-15,'center',undefined,'italic 11px Georgia');
 }
 
-export function matrixPlot(canvas,result,row,col){const{ctx,w,h}=setup(canvas),{A,N}=result,pad=7,cw=w-2*pad,ch=h-2*pad;let max=0;for(const v of A)max=Math.max(max,Math.abs(v));
-  for(let i=0;i<N;i++)for(let j=0;j<N;j++){const v=A[i*N+j];if(Math.abs(v)>1e-14){ctx.fillStyle=v>0?'#d89a7c':'#7d9cad';ctx.fillRect(pad+j/N*cw,pad+i/N*ch,Math.max(.6,cw/N),Math.max(.6,ch/N));}}
+export function matrixPlot(canvas,result,row,col){const{ctx,w,h}=setup(canvas),{A,N}=result,pad=7,cw=w-2*pad,ch=h-2*pad;
+  for(const[i,r]of matrixRows(A,N).entries())for(const[j,v]of r){if(Math.abs(v)>1e-14){ctx.fillStyle=v>0?'#d89a7c':'#7d9cad';ctx.fillRect(pad+j/N*cw,pad+i/N*ch,Math.max(.6,cw/N),Math.max(.6,ch/N));}}
   ctx.strokeStyle='#d2613a';ctx.lineWidth=.8;ctx.strokeRect(pad+col/N*cw-1,pad+row/N*ch-1,Math.max(2,cw/N)+2,Math.max(2,ch/N)+2);
 }
