@@ -1,6 +1,6 @@
-import {matrix,get,set,add,clone,rows as matrixRows} from './matrix.js';
-import {physicalDiffusion,velocity,convectionEntry,expression,sourceLoad,boundaryEvaluator} from './fem.js';
-import {factorDense,solveFactored} from './linear.js';
+import {matrix,get,set,add,clone,rows as matrixRows} from './matrix.js?v=257aed793d6ea050';
+import {physicalDiffusion,velocity,convectionEntry,expression,sourceLoad,boundaryEvaluator} from './fem.js?v=257aed793d6ea050';
+import {factorDense,solveFactored} from './linear.js?v=257aed793d6ea050';
 export const isAfc = state => ['afc','afc-low'].includes(state.stabilization);
 
 // Assemble before Dirichlet elimination: graph viscosity needs both a_ij and a_ji,

@@ -506,3 +506,14 @@ Five tests in `tests/sparse.test.mjs` check sparse/dense agreement, nonlocal
 entries and structured cloning, n=128 Poisson convergence, retained time steps
 with thinned playback, and explicit rejection of an inconsistent singular solve.
 The full test suite also covers the existing FEM, reaction, SUPG and AFC paths.
+
+
+### Consistent browser asset versions
+
+Run `node CDR_visualizer/scripts/version-assets.mjs` after editing runtime files
+and before serving them directly. `npm start` and the GitHub Pages workflow do
+this automatically. The script stamps a shared content hash onto local module,
+worker and stylesheet URLs, so cached older dense-only code cannot be mixed with
+the sparse solver. `--check` verifies the stamp without editing files. Reload
+an already-open tab after updating; a tab's loaded JavaScript does not change
+until navigation or reload. If the HTML itself is cached, use a hard refresh.

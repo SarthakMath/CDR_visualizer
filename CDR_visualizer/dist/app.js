@@ -1,8 +1,8 @@
-import {get as matrixGet,entries as matrixEntries} from './matrix.js';
-import {isAfc} from './afc.js';
-import {experiments,families,equationFamily,timeSetting,examplesFor,defaultExample,compatibleMethods} from './experiments.js';
-import {preset,exactSolution,isTransient,velocity,physicalDiffusion,addedDiffusion} from './fem.js';
-import {meshPlot,surfacePlot,crossPlot,matrixPlot,fieldValues,short} from './plots.js';
+import {get as matrixGet,entries as matrixEntries} from './matrix.js?v=257aed793d6ea050';
+import {isAfc} from './afc.js?v=257aed793d6ea050';
+import {experiments,families,equationFamily,timeSetting,examplesFor,defaultExample,compatibleMethods} from './experiments.js?v=257aed793d6ea050';
+import {preset,exactSolution,isTransient,velocity,physicalDiffusion,addedDiffusion} from './fem.js?v=257aed793d6ea050';
+import {meshPlot,surfacePlot,crossPlot,matrixPlot,fieldValues,short} from './plots.js?v=257aed793d6ea050';
 const $=id=>document.getElementById(id);
 const requestedExample=new URLSearchParams(location.search).get('example');
 const knownExamples=experiments.map(e=>e.id);
@@ -10,7 +10,7 @@ let state=preset(knownExamples.includes(requestedExample)?requestedExample:'afc-
 let camera={yaw:-.66,elevation:.67},view='surface',field='raw',showMesh=true,slice=.5,points=[],meshPoints=[],pending=false;
 let trajectory=null,frameIndex=0,selectedTime=0,playing=false,playRequest=0,lastPlayback=0;
 let worker;
-function startWorker(){worker=new Worker(new URL('./worker.js',import.meta.url),{type:'module'});worker.onmessage=handleWorkerMessage;worker.onerror=()=>failure('The solver could not start. Open the app through its web server, then reload.');}
+function startWorker(){worker=new Worker(new URL('./worker.js?v=257aed793d6ea050',import.meta.url),{type:'module'});worker.onmessage=handleWorkerMessage;worker.onerror=()=>failure('The solver could not start. Open the app through its web server, then reload.');}
 const methodLabel=()=>isAfc(state)?(state.stabilization==='afc'?(isTransient(state)?'Zalesak FCT':`BJK AFC · μ = ${state.afcMu}`):'low-order graph diffusion'):state.stabilization==='supg'?`SUPG × ${state.supgScale}`:state.stabilization==='none'?'no stabilization':`isotropic δ = ${short(state.diffusion)}`;
 const format=v=>Math.abs(v)<1e-12?'0.000':Math.abs(v)<.001||Math.abs(v)>9999?v.toExponential(2):v.toFixed(3);
 function toast(message){$('toast').textContent=message;$('toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hidden'),4000);}

@@ -24,6 +24,9 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v6
 
+      - name: Version the app and worker assets
+        run: node CDR_visualizer/scripts/version-assets.mjs
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 

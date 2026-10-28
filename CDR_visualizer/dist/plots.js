@@ -1,5 +1,5 @@
-import {rows as matrixRows} from './matrix.js';
-import {interpolate,exactSolution} from './fem.js';
+import {rows as matrixRows} from './matrix.js?v=257aed793d6ea050';
+import {interpolate,exactSolution} from './fem.js?v=257aed793d6ea050';
 const palette=[[36,74,128],[67,142,179],[127,188,182],[224,214,161],[239,177,107],[220,116,68],[187,67,59]];
 export function color(t,alpha=1){
   t=Math.max(0,Math.min(1,t));const k=t*(palette.length-1),i=Math.min(palette.length-2,Math.floor(k)),v=k-i;

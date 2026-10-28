@@ -1,6 +1,6 @@
 // ILU(0)-preconditioned Krylov solves. Only preconditioning pivots are guarded;
 // convergence is always checked against the unmodified matrix and right side.
-import {rows} from './matrix.js';
+import {rows} from './matrix.js?v=257aed793d6ea050';
 const dot=(a,b)=>{let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];return s;};
 const norm=a=>Math.sqrt(dot(a,a));
 function multiply(f,x){const y=new Float64Array(f.n);for(let i=0;i<f.n;i++)for(let k=f.ptr[i];k<f.ptr[i+1];k++)y[i]+=f.val[k]*x[f.col[k]];return y;}

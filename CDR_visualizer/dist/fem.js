@@ -1,6 +1,6 @@
-import {matrix,get,set,add,combine,isSparse,rows as matrixRows} from './matrix.js';
-import {factorDense,solveFactored} from './linear.js';
-import {isAfc,solveAfcSteady} from './afc.js';
+import {matrix,get,set,add,combine,isSparse,rows as matrixRows} from './matrix.js?v=257aed793d6ea050';
+import {factorDense,solveFactored} from './linear.js?v=257aed793d6ea050';
+import {isAfc,solveAfcSteady} from './afc.js?v=257aed793d6ea050';
 // Linear (P1) triangular Galerkin finite elements. No numerical dependencies.
 export const layerTrace = 'x-(exp((x-1)/eps)-exp(-1/eps))/(1-exp(-1/eps))';
 export const sharpQ = '(x-(exp((x-1)/0.025)-exp(-40))/(1-exp(-40)))';

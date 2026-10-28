@@ -1,12 +1,12 @@
-import {matrix,set,combine,rows as storedRows} from './matrix.js';
-import {isAfc,afcTimeStepper,afcReducedLoad} from './afc.js';
-import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,velocityAt,isTransient,addedDiffusion,supgLoad} from './fem.js';
+import {matrix,set,combine,rows as storedRows} from './matrix.js?v=257aed793d6ea050';
+import {isAfc,afcTimeStepper,afcReducedLoad} from './afc.js?v=257aed793d6ea050';
+import {assemble,expression,boundaryEvaluator,sourceLoad,diagnostics,exactSolution,physicalDiffusion,velocity,velocityAt,isTransient,addedDiffusion,supgLoad} from './fem.js?v=257aed793d6ea050';
 
 export const matrixRows=storedRows;
 export function multiplyRows(rows,b){return Float64Array.from(rows,row=>row.reduce((sum,[j,v])=>sum+v*b[j],0));}
 
-import {factorDense,solveFactored} from './linear.js';
-export {factorDense,solveFactored} from './linear.js';
+import {factorDense,solveFactored} from './linear.js?v=257aed793d6ea050';
+export {factorDense,solveFactored} from './linear.js?v=257aed793d6ea050';
 
 function reducedForcing(system,state,load,g,supgF){
   const F=load.slice(),lift=new Float64Array(system.N);

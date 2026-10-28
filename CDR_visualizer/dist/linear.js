@@ -1,5 +1,5 @@
-import {isSparse} from './matrix.js';
-import {factorSparse,solveSparse} from './sparse-solver.js';
+import {isSparse} from './matrix.js?v=257aed793d6ea050';
+import {factorSparse,solveSparse} from './sparse-solver.js?v=257aed793d6ea050';
 // Factor once per distinct step size, reuse throughout the time evolution.
 export function factorDense(matrix,n){
   if(isSparse(matrix))return factorSparse(matrix);
